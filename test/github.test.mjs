@@ -38,11 +38,24 @@ describe('ghApi', () => {
     expect(ghApi('repos/o/r/issues/comments/1', { method: 'DELETE' })).toBeUndefined();
   });
 
-  it('follows every page when asked and joins list pages into one array', () => {
-    const exec = fakeExec(() => JSON.stringify([[{ id: 1 }, { id: 2 }], [{ id: 3 }]]));
+  it('follows every page when asked, without --slurp (older gh lacks it), and joins the list pages', () => {
+    // `gh api --paginate` prints the pages one after another, each a JSON text of its own.
+    const exec = fakeExec(() => '[{"id":1},{"id":2}]\n[{"id":3}]\n');
     const { ghApi } = fakeGithub(exec);
     expect(ghApi('repos/o/r/pulls?per_page=100', { paginate: true })).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
-    expect(exec.mock.calls[0][1]).toEqual(['api', 'repos/o/r/pulls?per_page=100', '--paginate', '--slurp']);
+    expect(exec.mock.calls[0][1]).toEqual(['api', 'repos/o/r/pulls?per_page=100', '--paginate']);
+  });
+
+  it('splits pages on brackets outside strings, so brackets and escaped quotes in bodies do not confuse it', () => {
+    const pages = [[{ body: 'a ] b } c "quoted" \\ [x]' }], [{ body: '{"not":"a page"}' }]];
+    const exec = fakeExec(() => pages.map((page) => JSON.stringify(page)).join(''));
+    const { ghApi } = fakeGithub(exec);
+    expect(ghApi('repos/o/r/issues/1/comments', { paginate: true })).toEqual(pages.flat());
+  });
+
+  it('accepts one page alone, and a pretty-printed page', () => {
+    const { ghApi } = fakeGithub(fakeExec(() => '[\n  {\n    "id": 1\n  }\n]\n'));
+    expect(ghApi('repos/o/r/pulls', { paginate: true })).toEqual([{ id: 1 }]);
   });
 
   it('joins the list inside wrapped pages, as the Actions endpoints return them', () => {
@@ -50,11 +63,16 @@ describe('ghApi', () => {
       { total_count: 3, jobs: [{ id: 1 }, { id: 2 }] },
       { total_count: 3, jobs: [{ id: 3 }] },
     ];
-    const { ghApi } = fakeGithub(fakeExec(() => JSON.stringify(pages)));
+    const { ghApi } = fakeGithub(fakeExec(() => pages.map((page) => JSON.stringify(page)).join('\n')));
     expect(ghApi('repos/o/r/actions/runs/9/jobs', { paginate: true })).toEqual({
       total_count: 3,
       jobs: [{ id: 1 }, { id: 2 }, { id: 3 }],
     });
+  });
+
+  it('reports malformed paginated output as a parse error rather than an empty result', () => {
+    const { ghApi } = fakeGithub(fakeExec(() => 'not json'));
+    expect(() => ghApi('repos/o/r/pulls', { paginate: true })).toThrow(SyntaxError);
   });
 
   it('does not paginate unless asked', () => {

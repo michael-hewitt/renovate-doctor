@@ -397,6 +397,19 @@ describe('decide, on a workflow_run', () => {
     expect(result.error).toBeInstanceOf(Error);
     expect(result.headBranch).toBe('renovate/vite-plugin-pwa-2.x');
   });
+
+  it('keeps only the first two lines of a gate error, so a CLI usage dump stays out of the email', () => {
+    const stderr =
+      'unknown flag: --slurp\n\nUsage:  gh api <endpoint> [flags]\n\nFlags:\n  --cache duration  Cache the response';
+    const github = fakeGithub({
+      [routes.openPulls]: () => {
+        throw Object.assign(new Error(`Command failed: gh api x --paginate --slurp\n${stderr}`), { stderr });
+      },
+    });
+    const result = decide(workflowRun(), { github, sleep });
+    expect(result.reason).toBe('gate error: Command failed: gh api x --paginate --slurp unknown flag: --slurp');
+    expect(result.summary).not.toContain('Usage');
+  });
 });
 
 describe('decide, on a manual run', () => {

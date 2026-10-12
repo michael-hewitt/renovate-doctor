@@ -40,7 +40,7 @@ function fakeGithub(answers) {
 
 describe('fetchFailedLogs', () => {
   it("returns each failed job's log under a header naming the job", () => {
-    const { github } = fakeGithub({ [jobsRoute]: JSON.stringify([jobs]), [logRoute(failedJob.id)]: jobLog });
+    const { github } = fakeGithub({ [jobsRoute]: JSON.stringify(jobs), [logRoute(failedJob.id)]: jobLog });
     const sleep = vi.fn();
     const text = fetchFailedLogs(runId, { github, repository, sleep });
     expect(text.startsWith('==> build (job 114034413478) <==\n2026-10-09T21:36:44.7751153Z Current runner')).toBe(true);
@@ -53,7 +53,7 @@ describe('fetchFailedLogs', () => {
     const passed = { ...failedJob, id: 1, name: 'lint', conclusion: 'success' };
     const timedOut = { ...failedJob, id: 2, name: 'e2e', conclusion: 'timed_out' };
     const { github, exec } = fakeGithub({
-      [jobsRoute]: JSON.stringify([{ total_count: 3, jobs: [passed, failedJob, timedOut] }]),
+      [jobsRoute]: JSON.stringify({ total_count: 3, jobs: [passed, failedJob, timedOut] }),
       [logRoute(failedJob.id)]: jobLog,
       [logRoute(2)]:
         '2026-10-09T21:50:00.0000000Z ##[error]The job running on runner x has exceeded the maximum execution time',
@@ -65,7 +65,7 @@ describe('fetchFailedLogs', () => {
 
   it('keeps only the last 600 lines of a long log', () => {
     const long = Array.from({ length: 1000 }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
-    const { github } = fakeGithub({ [jobsRoute]: JSON.stringify([jobs]), [logRoute(failedJob.id)]: long });
+    const { github } = fakeGithub({ [jobsRoute]: JSON.stringify(jobs), [logRoute(failedJob.id)]: long });
     const lines = fetchFailedLogs(runId, { github, repository }).trimEnd().split('\n');
     expect(lines).toHaveLength(tailLines + 1);
     expect(lines[1]).toBe('line 401');
@@ -75,7 +75,7 @@ describe('fetchFailedLogs', () => {
   it('waits for GitHub to publish a log that is not there yet', () => {
     let calls = 0;
     const { github } = fakeGithub({
-      [jobsRoute]: JSON.stringify([jobs]),
+      [jobsRoute]: JSON.stringify(jobs),
       [logRoute(failedJob.id)]: () => {
         calls += 1;
         if (calls < 3) throw notFound();
@@ -90,7 +90,7 @@ describe('fetchFailedLogs', () => {
 
   it('gives up after about four minutes and says which log is missing', () => {
     const { github, exec } = fakeGithub({
-      [jobsRoute]: JSON.stringify([jobs]),
+      [jobsRoute]: JSON.stringify(jobs),
       [logRoute(failedJob.id)]: () => {
         throw notFound();
       },
@@ -105,7 +105,7 @@ describe('fetchFailedLogs', () => {
   });
 
   it('returns nothing, without waiting, for a run with no failed job', () => {
-    const { github } = fakeGithub({ [jobsRoute]: JSON.stringify([{ total_count: 0, jobs: [] }]) });
+    const { github } = fakeGithub({ [jobsRoute]: JSON.stringify({ total_count: 0, jobs: [] }) });
     const sleep = vi.fn();
     expect(fetchFailedLogs(runId, { github, repository, sleep })).toBe('');
     expect(sleep).not.toHaveBeenCalled();

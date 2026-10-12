@@ -4,6 +4,15 @@ Callers pin a tag (`uses: michael-hewitt/renovate-doctor/.github/workflows/renov
 workflow checks out its scripts and skill at that tag's commit, so a caller runs exactly the version it pinned
 until it moves the pin. Every change a caller could notice gets a new tag and an entry here.
 
+## v0.1.2 - 2026-10-12
+
+- `gh api --paginate` is used without `--slurp`, which the first caller's self-hosted runner's `gh` predates
+  (it is from 2.49): the adapter splits the concatenated pages itself. Before, every gate run failed at its
+  first paginated call ("unknown flag: --slurp") and reported the `failed` outcome.
+- A gate error keeps only its first two lines (the command and the CLI's own first line), so a usage dump
+  no longer fills the email and the step summary.
+- The Gate step logs the runner's `gh` version first.
+
 ## v0.1.1 - 2026-10-12
 
 - A caller forwarding its `workflow_dispatch` inputs must pass `pr` and `run_id` as

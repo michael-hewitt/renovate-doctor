@@ -222,7 +222,14 @@ export function decide(input, deps) {
  * @returns {GateResult}
  */
 export function gateErrorResult(error, partial = {}) {
-  const reason = `gate error: ${oneLine(/** @type {any} */ (error)?.message ?? error)}`;
+  // The first two lines say what failed and why ("Command failed: gh api ...", then gh's own first
+  // line); a CLI's usage text after that would only bury them in the email.
+  const message = `${/** @type {any} */ (error)?.message ?? error}`
+    .split('\n')
+    .filter((line) => line.trim())
+    .slice(0, 2)
+    .join('\n');
+  const reason = `gate error: ${oneLine(message)}`;
   // The first stack frame says where it broke; the message is already in the reason.
   const frame = `${/** @type {any} */ (error)?.stack ?? ''}`
     .split('\n')
