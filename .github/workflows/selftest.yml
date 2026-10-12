@@ -1,0 +1,32 @@
+# Self-test: calls the reusable workflow from this repository itself on every pull request, as a caller
+# would, so a change that breaks the workflow's validity (an input a caller passes that is not declared, a
+# context used where it is not allowed, a permission a called job requests that the caller did not grant)
+# fails here, with the error on a public run page, rather than in the first caller's private repository.
+#
+# It is a dry run against this repository's own PR #2, which has no failed run, so the gate stops at once
+# and nothing is launched; the secrets are empty here (the repository holds none), which `required: true`
+# does not check. Only the workflow's validity and the gate's and report's wiring are exercised.
+
+name: Self-test the reusable workflow
+
+on:
+  pull_request:
+
+jobs:
+  call:
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+      id-token: write
+    uses: ./.github/workflows/renovate-doctor.yml
+    with:
+      mode: triage
+      email_to: nobody@example.com
+      email_from: nobody@example.com
+      pr: 2
+      dry_run: true
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      MANDRILL_API_KEY: ${{ secrets.MANDRILL_API_KEY }}
