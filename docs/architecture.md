@@ -116,7 +116,9 @@ a dry run; the outcome file path; and the rerun-workflow name if any.
 ## Gate contract (`scripts/gate.mjs`)
 
 Environment: `GITHUB_EVENT_NAME`, `GITHUB_EVENT_PATH`, `GITHUB_REPOSITORY`, `GH_TOKEN`, `RUNNER_TEMP`,
-`INPUT_PR`, `INPUT_RUN_ID`, `INPUT_DRY_RUN` (`true`/`false`), `RERUN_WORKFLOW`, `GITHUB_OUTPUT`.
+`INPUT_PR`, `INPUT_RUN_ID`, `INPUT_DRY_RUN` (`true`/`false`), `RERUN_WORKFLOW`, `GITHUB_OUTPUT`,
+`GITHUB_WORKFLOW_REF` (set by Actions; it names the caller's own renovate-doctor workflow file, whose failed
+runs are left out of `failed_run_ids`).
 
 Decision, in order; the first failing condition is the reason:
 
@@ -166,7 +168,8 @@ passed typecheck and tests locally; the merge itself waits for CI.
 Environment: `REPORT_MODE` (`triage`/`lift`), `OUTCOME_FILE`, `AGENT_OUTCOME` (the agent step's `outcome`:
 `success`/`failure`/`cancelled`/`skipped`), `GATE_OUTCOME`, `GATE_SUMMARY`, `GATE_REASON`, `DRY_RUN`,
 `PR_NUMBER`, `PR_URL`, `PR_TITLE`, `HEAD_SHA`, `RUN_URL`, `GITHUB_REPOSITORY`, `GH_TOKEN`, `EMAIL_TO`,
-`EMAIL_FROM`, `EMAIL_FROM_NAME`, `MANDRILL_API_KEY`; for lift: `LIFT_OUTCOME`, `LIFT_PR_URL`, `LIFT_SUMMARY`.
+`EMAIL_FROM`, `EMAIL_FROM_NAME`, `MANDRILL_API_KEY`; for lift: `LIFT_OUTCOME` (`opened`/`nothing`/`failure`),
+`LIFT_PR_URL`, `LIFT_SUMMARY`.
 
 Rules: no email for `merged` or `rerun` without `mention`; otherwise one plain-text email. No outcome file
 and an agent step that failed or was cancelled → outcome `failed` ("the run failed", with the run link); no
