@@ -25,12 +25,13 @@ const holdTest = fs.readFileSync(path.join(fixtures, 'pwa_assets_generator_hold.
 
 const repository = 'crescendosw/webapp';
 const routes = {
-  pulls: (page) => `repos/${repository}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=${page}`,
+  pulls: (/** @type {number} */ page) =>
+    `repos/${repository}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=${page}`,
   issues: `repos/${repository}/issues?creator=renovate%5Bbot%5D&state=open&per_page=100`,
   dashboard: `repos/${repository}/issues/1460`,
 };
 
-const daysAgo = (days) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+const daysAgo = (/** @type {number} */ days) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
 // Renovate reopened the generator's update 10 days ago, after its hold was lifted 15 days ago.
 const generatorPr = {
@@ -68,8 +69,10 @@ const rules = {
   oldPkg: { description: 'remove after 2026-06-01: retry', matchPackageNames: ['old-pkg'], enabled: false },
   leftPad: { description: 'remove after 2026-10-05: retry', matchPackageNames: ['left-pad'], enabled: false },
 };
-const config = (...packageRules) => `${JSON.stringify({ extends: ['config:recommended'], packageRules }, null, 2)}\n`;
+const config = (/** @type {object[]} */ ...packageRules) =>
+  `${JSON.stringify({ extends: ['config:recommended'], packageRules }, null, 2)}\n`;
 
+/** @type {string[]} */
 const roots = [];
 afterAll(() => {
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
@@ -78,13 +81,16 @@ afterAll(() => {
 /**
  * Builds a repository from `steps`, oldest first: each writes files (a null content deletes the file) and
  * is committed `daysAgo` days before now. Returns the repository and the commit of each step.
+ *
+ * @param {{ daysAgo: number, files: Record<string, string | null>, message: string }[]} steps
  */
 function makeHistory(steps) {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'renovate-doctor-recreate-'));
   roots.push(repo);
-  const git = (args, env = {}) =>
+  const git = (/** @type {string[]} */ args, /** @type {Record<string, string>} */ env = {}) =>
     execFileSync('git', args, { cwd: repo, encoding: 'utf8', env: { ...process.env, ...env } }).trim();
   git(['init', '-q', '-b', 'main']);
+  /** @type {string[]} */
   const commits = [];
   for (const { daysAgo, files, message } of steps) {
     for (const [file, content] of Object.entries(files)) {
@@ -166,10 +172,13 @@ const { repo, commits } = makeHistory([
   { daysAgo: 3, message: 'docs: a readme', files: { 'README.md': '# webapp\n' } },
 ]);
 
+/** @param {Record<string, unknown>} responses */
 function fakeGithub(responses) {
+  /** @type {{ route: string, method?: string, body?: any }[]} */
   const calls = [];
   return {
     calls,
+    /** @type {import('../lib/github.mjs').GhApi} */
     ghApi(route, options = {}) {
       calls.push({ route, ...options });
       if (options.method === 'PATCH') return {};
@@ -179,11 +188,13 @@ function fakeGithub(responses) {
   };
 }
 
+/** @param {{ pulls?: object[], issues?: object[] }} [answers] */
 function githubWith({ pulls = [generatorPr], issues = [dashboard] } = {}) {
   return fakeGithub({ [routes.pulls(1)]: pulls, [routes.issues]: issues });
 }
 
-const patches = (github) => github.calls.filter((call) => call.method === 'PATCH');
+const patches = (/** @type {ReturnType<typeof fakeGithub>} */ github) =>
+  github.calls.filter((call) => call.method === 'PATCH');
 
 describe('findLiftedPackages', () => {
   it('finds holds lifted by a lift commit and by a condition-test fix commit, newest first, each once', () => {
@@ -225,6 +236,7 @@ describe('findLiftedPackages', () => {
 describe('recreate', () => {
   it('ticks the lifted package Renovate opened no PR for since, and not the one Renovate reopened', () => {
     const github = githubWith();
+    /** @type {string[]} */
     const lines = [];
     const result = recreate({ repository, cwd: repo }, { github, out: (line) => lines.push(line) });
 
@@ -368,6 +380,7 @@ describe('recreate', () => {
       ' - [x] <!-- recreate-branch=renovate/typescript-7.x -->',
     );
     const github = githubWith({ issues: [{ ...dashboard, body }] });
+    /** @type {string[]} */
     const lines = [];
     expect(recreate({ repository, cwd: repo }, { github, out: (line) => lines.push(line) }).ticked).toEqual([]);
     expect(patches(github)).toEqual([]);
@@ -376,6 +389,7 @@ describe('recreate', () => {
 
   it('prints what it would tick in a dry run and saves nothing', () => {
     const github = githubWith();
+    /** @type {string[]} */
     const lines = [];
     const result = recreate({ repository, cwd: repo, dryRun: true }, { github, out: (line) => lines.push(line) });
     expect(result.ticked).toEqual(['typescript']);
@@ -385,6 +399,7 @@ describe('recreate', () => {
 
   it('says so and ticks nothing when there is no Dependency Dashboard issue', () => {
     const github = githubWith({ issues: [{ ...dashboard, title: 'Something else' }] });
+    /** @type {string[]} */
     const lines = [];
     expect(recreate({ repository, cwd: repo }, { github, out: (line) => lines.push(line) }).ticked).toEqual([]);
     expect(patches(github)).toEqual([]);
@@ -393,6 +408,7 @@ describe('recreate', () => {
 
   it('calls nothing on GitHub when no hold was lifted in the window', () => {
     const github = githubWith();
+    /** @type {string[]} */
     const lines = [];
     const result = recreate({ repository, cwd: repo, days: 4 }, { github, out: (line) => lines.push(line) });
     expect(result.lifted).toEqual([]);
@@ -453,6 +469,7 @@ describe('main', () => {
   });
 
   it('exits 1 on a bad --days', () => {
+    /** @type {string[]} */
     const errors = [];
     const code = main({
       argv: ['--days', 'soon'],

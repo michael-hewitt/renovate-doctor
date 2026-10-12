@@ -16,7 +16,7 @@ input until a caller needs it.
 
 ```
 .github/workflows/renovate-doctor.yml   the reusable workflow (workflow_call)
-.github/workflows/ci.yml                this repository's own tests and format check
+.github/workflows/ci.yml                this repository's own tests, type check and format check
 scripts/gate.mjs                        triage: launch or skip, and why
 scripts/report.mjs                      triage: the email (or silence) after the agent
 scripts/lift.mjs                        lift: remove expired holds, open the config PR
@@ -30,17 +30,19 @@ lib/logs.mjs                            fetch a failed run's job logs, with the 
 skills/renovate-doctor/SKILL.md         the agent's procedure, readable by a person and runnable by hand
 test/*.test.mjs, test/fixtures/         vitest; fixtures are real event payloads and API responses, trimmed
 docs/architecture.md                    this file
-README.md  CHANGELOG.md  LICENSE (MIT)  package.json  pnpm-lock.yaml  .nvmrc  .prettierrc  .gitignore
+README.md  CHANGELOG.md  LICENSE (MIT)  package.json  pnpm-lock.yaml  tsconfig.json  .nvmrc  .prettierrc  .gitignore
 ```
 
-Runtime: Node 24 (`.nvmrc`), ES modules, **zero runtime dependencies** (vitest and prettier are dev only);
+Runtime: Node 24 (`.nvmrc`), ES modules, **zero runtime dependencies** (vitest, prettier and typescript are dev only);
 the scripts run on the caller's runner straight from a checkout of this repository, so nothing is installed
 there. The `gh` CLI is on PATH (GitHub-hosted runners have it; self-hosted ones install it). All GitHub reads
 and writes go through `lib/github.mjs`, whose default adapter shells out to `gh api` and which tests replace
 with a fake. All outside calls retry a few times with a growing pause: a self-hosted runner's network can
 stall for seconds.
 
-Style: prettier with single quotes and `printWidth: 120`; `pnpm run format:check` is part of CI. Comments
+Style: prettier with single quotes and `printWidth: 120`; `pnpm run format:check` is part of CI. The
+JavaScript is type-checked from its JSDoc (`pnpm run typecheck`: `tsc --checkJs`, strict, also in CI); the
+shapes that cross files are `@typedef`s next to the code that owns them. Comments
 explain why, in full sentences; file headers say what the script is for and which environment it reads.
 
 ## The reusable workflow

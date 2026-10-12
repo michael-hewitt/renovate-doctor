@@ -10,8 +10,8 @@ import { commentAuthorsFrom, decide, formatOutputs, handledMarker, main, toOutpu
 // 37993773276 failed on renovate/vite-plugin-pwa-2.x at 457ec6c, and its PR #3814 was later merged at
 // eb80467. Tests that need the PR open at the run's head derive that state from the real object.
 const fixtures = path.join(import.meta.dirname, 'fixtures');
-const load = (name) => JSON.parse(fs.readFileSync(path.join(fixtures, name), 'utf8'));
-const text = (name) => fs.readFileSync(path.join(fixtures, name), 'utf8');
+const load = (/** @type {string} */ name) => JSON.parse(fs.readFileSync(path.join(fixtures, name), 'utf8'));
+const text = (/** @type {string} */ name) => fs.readFileSync(path.join(fixtures, name), 'utf8');
 
 const repository = 'crescendosw/webapp';
 const eventPath = path.join(fixtures, 'workflow_run_event.json');
@@ -41,14 +41,19 @@ const routes = {
   pull: `repos/${repository}/pulls/3814`,
   comments: `repos/${repository}/issues/3814/comments?per_page=100`,
   commits: `repos/${repository}/pulls/3814/commits?per_page=100`,
-  failedRuns: (sha) => `repos/${repository}/actions/runs?head_sha=${sha}&status=failure&per_page=100`,
-  run: (id) => `repos/${repository}/actions/runs/${id}`,
-  jobs: (id) => `repos/${repository}/actions/runs/${id}/jobs?per_page=100`,
-  log: (id) => `repos/${repository}/actions/jobs/${id}/logs`,
+  failedRuns: (/** @type {string} */ sha) =>
+    `repos/${repository}/actions/runs?head_sha=${sha}&status=failure&per_page=100`,
+  run: (/** @type {number} */ id) => `repos/${repository}/actions/runs/${id}`,
+  jobs: (/** @type {number} */ id) => `repos/${repository}/actions/runs/${id}/jobs?per_page=100`,
+  log: (/** @type {number} */ id) => `repos/${repository}/actions/jobs/${id}/logs`,
 };
 
 // A commit pushed by someone other than Renovate, shaped like the real commit fixture. The second has no
 // matching GitHub account (author null), as a commit with an unregistered email has.
+/**
+ * @param {string} sha
+ * @param {string | null} [login]
+ */
 function fixCommit(sha, login) {
   return {
     ...commits[0],
@@ -60,7 +65,9 @@ function fixCommit(sha, login) {
 
 // The world as GitHub would answer it, keyed by route; `overrides` replace or add answers. A function
 // answer is called (and may throw). Every call is recorded so tests can say what was not asked.
+/** @param {Record<string, unknown>} [overrides] */
 function fakeGithub(overrides = {}) {
+  /** @type {Record<string, unknown>} */
   const answers = {
     [routes.openPulls]: [openPull],
     [routes.comments]: comments,
@@ -70,13 +77,13 @@ function fakeGithub(overrides = {}) {
     [routes.log(jobId)]: codeLog,
     ...overrides,
   };
-  const answer = (route) => {
+  const answer = (/** @type {string} */ route) => {
     if (!(route in answers)) throw new Error(`unexpected route ${route}`);
     const value = answers[route];
     return structuredClone(typeof value === 'function' ? value() : value);
   };
-  const ghApi = vi.fn((route) => answer(route));
-  const gh = vi.fn((args) => answer(args[1]));
+  const ghApi = vi.fn((/** @type {string} */ route) => answer(route));
+  const gh = vi.fn((/** @type {string[]} */ args) => answer(args[1]));
   return { ghApi, gh, routes: () => [...ghApi.mock.calls.map(([r]) => r), ...gh.mock.calls.map(([a]) => a[1])] };
 }
 
@@ -152,7 +159,7 @@ describe('decide, on a workflow_run', () => {
     const result = decide(workflowRun(), { github, sleep });
     expect(result.launch).toBe(false);
     expect(result.reason).toBe('open: no open PR has head branch renovate/vite-plugin-pwa-2.x');
-    expect(result.checks.find((check) => check.condition === 'renovate').result).toBe('unknown');
+    expect(result.checks.find((check) => check.condition === 'renovate')?.result).toBe('unknown');
   });
 
   it('skips when Renovate has pushed a new head since the run', () => {
@@ -164,6 +171,11 @@ describe('decide, on a workflow_run', () => {
   });
 
   // A renovate-doctor comment in the real comment's shape, starting with `firstLine`.
+  /**
+   * @param {number} id
+   * @param {string} firstLine
+   * @param {string} [outcome]
+   */
   function doctorComment(id, firstLine, outcome) {
     return {
       ...comments[0],
@@ -239,7 +251,7 @@ describe('decide, on a workflow_run', () => {
     const github = fakeGithub({ [routes.log(jobId)]: networkLog });
     const result = decide(workflowRun(), { github, sleep });
     expect(result.launch).toBe(true);
-    expect(result.checks.find((check) => check.condition === "rerun automation's turn").detail).toBe(
+    expect(result.checks.find((check) => check.condition === "rerun automation's turn")?.detail).toBe(
       'no rerun automation to defer to',
     );
     expect(result.logs[37993773276]).toContain('ERR_PNPM_BROKEN_PNPM_INSTALL');
@@ -252,7 +264,7 @@ describe('decide, on a workflow_run', () => {
       sleep,
     });
     expect(result.launch).toBe(true);
-    expect(result.checks.find((check) => check.condition === "rerun automation's turn").detail).toBe(
+    expect(result.checks.find((check) => check.condition === "rerun automation's turn")?.detail).toBe(
       'run 37993773276 is attempt 2; Rerun network failures has had its turn',
     );
   });
@@ -396,7 +408,7 @@ describe('decide, on a manual run', () => {
       { github, sleep },
     );
     expect(result.launch).toBe(false);
-    expect(result.checks.find((check) => check.condition === 'renovate').detail).toBe(
+    expect(result.checks.find((check) => check.condition === 'renovate')?.detail).toBe(
       "run 38000000001 is on feature/new-tuner, not the PR's renovate/vite-plugin-pwa-2.x",
     );
     expect(result.reason).toMatch(

@@ -18,7 +18,7 @@ import {
 // future, malformed, and a rule with no marker at all. The hold test is webapp's real condition test for
 // the @vite-pwa/assets-generator hold.
 const fixtures = path.join(import.meta.dirname, 'fixtures');
-const text = (name) => fs.readFileSync(path.join(fixtures, name), 'utf8');
+const text = (/** @type {string} */ name) => fs.readFileSync(path.join(fixtures, name), 'utf8');
 const webappConfig = text('webapp_renovate.json');
 const holdsConfig = text('renovate_holds.json');
 const holdTest = text('pwa_assets_generator_hold.test.ts.txt');

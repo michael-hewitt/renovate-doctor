@@ -14,7 +14,14 @@ const declined = {
   links: { config_pr: 'https://github.com/crescendosw/webapp/pull/3890' },
 };
 
-const parse = (value) => parseOutcome(JSON.stringify(value));
+const parse = (/** @type {unknown} */ value) => parseOutcome(JSON.stringify(value));
+
+/**
+ * The problems a parse reported; undefined for one that succeeded, so an assertion on them fails.
+ *
+ * @param {import('../lib/outcome.mjs').ParsedOutcome} parsed
+ */
+const problemsOf = (parsed) => (parsed.ok ? undefined : parsed.problems);
 
 describe('parseOutcome', () => {
   it('accepts a complete outcome file and returns its fields', () => {
@@ -48,7 +55,7 @@ describe('parseOutcome', () => {
   it('reports text that is not JSON', () => {
     const result = parseOutcome('{"outcome": "merged", "summary": "cut off');
     expect(result.ok).toBe(false);
-    expect(result.problems).toEqual([expect.stringMatching(/^the file is not valid JSON/)]);
+    expect(problemsOf(result)).toEqual([expect.stringMatching(/^the file is not valid JSON/)]);
   });
 
   it.each([
@@ -60,17 +67,17 @@ describe('parseOutcome', () => {
   });
 
   it('reports an unknown outcome and a missing one', () => {
-    expect(parse({ ...declined, outcome: 'fixed' }).problems).toEqual([
+    expect(problemsOf(parse({ ...declined, outcome: 'fixed' }))).toEqual([
       '"outcome" is "fixed"; it must be one of merged, rerun, declined, escalated, skipped',
     ]);
     const { outcome: _, ...withoutOutcome } = declined;
-    expect(parse(withoutOutcome).problems).toEqual([
+    expect(problemsOf(parse(withoutOutcome))).toEqual([
       '"outcome" is undefined; it must be one of merged, rerun, declined, escalated, skipped',
     ]);
   });
 
   it('reports an unknown classification', () => {
-    expect(parse({ ...declined, classification: 'flaky' }).problems).toEqual([
+    expect(problemsOf(parse({ ...declined, classification: 'flaky' }))).toEqual([
       '"classification" is "flaky"; it must be one of unrelated, fixable, not-takeable, needs-human, or absent',
     ]);
   });
@@ -81,21 +88,23 @@ describe('parseOutcome', () => {
     ['blank', '   ', '"   "'],
     ['not a string', 42, '42'],
   ])('reports a %s summary', (_, summary, shown) => {
-    expect(parse({ ...declined, summary }).problems).toEqual([`"summary" is ${shown}; it must be a non-empty string`]);
+    expect(problemsOf(parse({ ...declined, summary }))).toEqual([
+      `"summary" is ${shown}; it must be a non-empty string`,
+    ]);
   });
 
   it('reports a mention that is not a boolean', () => {
-    expect(parse({ ...declined, mention: 'yes' }).problems).toEqual([
+    expect(problemsOf(parse({ ...declined, mention: 'yes' }))).toEqual([
       '"mention" is "yes"; it must be true, false, or absent',
     ]);
   });
 
   it('reports links that are not an object of http(s) URLs', () => {
-    expect(parse({ ...declined, links: ['https://example.com'] }).problems).toEqual([
+    expect(problemsOf(parse({ ...declined, links: ['https://example.com'] }))).toEqual([
       '"links" is ["https://example.com"]; it must be an object of URLs, or absent',
     ]);
     expect(
-      parse({ ...declined, links: { config_pr: '#3890', hold_test: 'file:///etc/passwd', other: 7 } }).problems,
+      problemsOf(parse({ ...declined, links: { config_pr: '#3890', hold_test: 'file:///etc/passwd', other: 7 } })),
     ).toEqual([
       '"links.config_pr" is "#3890"; it must be an http(s) URL',
       '"links.hold_test" is "file:///etc/passwd"; it must be an http(s) URL',
@@ -106,7 +115,7 @@ describe('parseOutcome', () => {
   it('lists every problem at once', () => {
     const result = parse({ outcome: 'done', summary: '', mention: 1 });
     expect(result.ok).toBe(false);
-    expect(result.problems).toHaveLength(3);
+    expect(problemsOf(result)).toHaveLength(3);
   });
 });
 
@@ -134,6 +143,9 @@ describe('readOutcomeFile', () => {
   it('reports a path that cannot be read as a malformed file rather than throwing', () => {
     const result = readOutcomeFile(temp);
     expect(result.exists).toBe(true);
-    expect(result.parsed).toEqual({ ok: false, problems: [expect.stringMatching(/^the file could not be read/)] });
+    expect(result.exists && result.parsed).toEqual({
+      ok: false,
+      problems: [expect.stringMatching(/^the file could not be read/)],
+    });
   });
 });

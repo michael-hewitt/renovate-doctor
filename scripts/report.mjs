@@ -35,11 +35,11 @@ import { readOutcomeFile } from '../lib/outcome.mjs';
 import { handledMarker } from './gate.mjs';
 
 /**
- * @typedef {import('../lib/outcome.mjs').ParsedOutcome} ParsedOutcome
+ * @typedef {import('../lib/outcome.mjs').OutcomeFile} OutcomeFile
  *
  * @typedef {{
  *   mode: 'triage' | 'lift' | string,
- *   outcome?: { exists: false } | { exists: true, parsed: ParsedOutcome },
+ *   outcome?: OutcomeFile,
  *   agentOutcome?: string,
  *   triageResult?: string,
  *   gate?: { outcome?: string, summary?: string, reason?: string },
@@ -78,6 +78,10 @@ const silentOutcomes = ['skipped'];
  * The PR comment the report posts when the gate produced the outcome, in the form every renovate-doctor
  * comment takes: the marker with the sha and the outcome on its own line (which the gate's "not handled"
  * check reads), a bold heading, the outcome, and the summary.
+ *
+ * @param {string} headSha
+ * @param {string} outcome
+ * @param {string} summary
  */
 export function formatComment(headSha, outcome, summary) {
   return `${handledMarker(headSha, outcome)}\n**renovate-doctor**\n\nOutcome: ${outcome}\n\n${summary}\n`;
@@ -183,14 +187,23 @@ export function resolveTriage({ outcome: file = { exists: false }, agentOutcome 
   };
 }
 
+/** @param {string | undefined} text */
 function firstLine(text) {
   return `${text ?? ''}`.trim().split('\n')[0].trim();
 }
 
+/**
+ * @param {string | undefined} url
+ * @param {string} what
+ */
 function linkOrUnknown(url, what) {
   return url || `(${what} not given)`;
 }
 
+/**
+ * @param {ReportInput} input
+ * @returns {Message | undefined}
+ */
 function composeTriage(input) {
   const resolution = resolveTriage(input);
   if (!resolution.email) return undefined;
@@ -221,6 +234,7 @@ const liftOutcomes = ['opened', 'nothing', 'blocked', 'failure'];
  * An outcome this script does not know is treated as a failure, so a broken lift job is never silent.
  *
  * @param {ReportInput} input
+ * @returns {{ email: boolean, why: string }}
  */
 export function resolveLift({ lift = {} }) {
   const outcome = lift.outcome ?? '';
@@ -234,6 +248,10 @@ export function resolveLift({ lift = {} }) {
   };
 }
 
+/**
+ * @param {ReportInput} input
+ * @returns {Message | undefined}
+ */
 function composeLift(input) {
   const { lift = {}, runUrl, repository } = input;
   if (!resolveLift(input).email) return undefined;
@@ -283,7 +301,11 @@ export function compose(input) {
   return composeTriage(input);
 }
 
-/** The one line saying what the report decided and why. */
+/**
+ * The one line saying what the report decided and why.
+ *
+ * @param {ReportInput} input
+ */
 export function explain(input) {
   const { email, why } = input.mode === 'lift' ? resolveLift(input) : resolveTriage(input);
   return `${why}; ${email ? 'emailing' : 'no email'}`;
@@ -305,6 +327,7 @@ export function readInput(env) {
   };
 }
 
+/** @param {unknown} text */
 function oneLine(text) {
   return `${text}`.replace(/\s*\n\s*/g, ' ').trim();
 }
@@ -316,8 +339,8 @@ function oneLine(text) {
  *
  * @param {NodeJS.ProcessEnv} [env]
  * @param {{
- *   github?: { ghApi: Function },
- *   fetchImpl?: typeof fetch,
+ *   github?: Pick<import('../lib/github.mjs').Github, 'ghApi'>,
+ *   fetchImpl?: import('../lib/mandrill.mjs').Fetch,
  *   stdout?: (text: string) => void,
  *   stderr?: (text: string) => void,
  *   retry?: { tries?: number, pauseMs?: number },
@@ -361,21 +384,23 @@ export async function run(
     );
     exitCode = 1;
   } else {
+    // `missing` above is empty, so the three required settings are set.
+    const { MANDRILL_API_KEY: apiKey, EMAIL_FROM: from, EMAIL_TO: to } = /** @type {Record<string, string>} */ (env);
     try {
       const receipt = await sendEmail(
         {
-          apiKey: env.MANDRILL_API_KEY,
-          from: env.EMAIL_FROM,
+          apiKey,
+          from,
           fromName: env.EMAIL_FROM_NAME || undefined,
-          to: env.EMAIL_TO,
+          to,
           subject: message.subject,
           text: message.text,
         },
         fetchImpl,
         retry,
       );
-      stdout(`Sent to ${env.EMAIL_TO} (Mandrill status: ${receipt.status}).\n`);
-    } catch (error) {
+      stdout(`Sent to ${to} (Mandrill status: ${receipt.status}).\n`);
+    } catch (/** @type {any} */ error) {
       stderr(`${heading}: the email was not sent: ${oneLine(error?.message ?? error)}\n`);
       exitCode = 1;
     }
@@ -394,7 +419,7 @@ export async function run(
           body: { body: message.comment },
         });
         stdout(`Posted the comment on PR #${pr.number}${posted?.html_url ? `: ${posted.html_url}` : ''}.\n`);
-      } catch (error) {
+      } catch (/** @type {any} */ error) {
         stderr(
           `${heading}: the comment on PR #${pr.number} was not posted (the email carries the news): ` +
             `${oneLine(error?.stderr || error?.message || error)}\n`,

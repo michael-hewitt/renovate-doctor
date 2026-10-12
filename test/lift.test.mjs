@@ -12,7 +12,7 @@ import { formatPrBody, lift, liftMarker, main, parseArgs, prTitle, summarize, to
 // (@vite-pwa/assets-generator, and typescript expiring today), a future one, a malformed one and one with
 // no marker; the hold test is crescendosw/webapp's real condition test for the first.
 const fixtures = path.join(import.meta.dirname, 'fixtures');
-const text = (name) => fs.readFileSync(path.join(fixtures, name), 'utf8');
+const text = (/** @type {string} */ name) => fs.readFileSync(path.join(fixtures, name), 'utf8');
 const holdsConfig = text('renovate_holds.json');
 const webappConfig = text('webapp_renovate.json');
 // webapp's real hold test, with the marker line the lift finds condition tests by.
@@ -28,7 +28,12 @@ const protectionRoute = `repos/${repository}/branches/main/protection/required_s
 const rulesRoute = `repos/${repository}/rules/branches/main`;
 const requiredChecks = { strict: true, contexts: ['Node.js CI'], checks: [{ context: 'Node.js CI', app_id: 15368 }] };
 
-/** An error as `gh api` raises it for an HTTP failure. */
+/**
+ * An error as `gh api` raises it for an HTTP failure.
+ *
+ * @param {number} status
+ * @param {string} message
+ */
 function ghError(status, message) {
   return () => {
     throw Object.assign(new Error(`Command failed: gh api`), { stderr: `gh: ${message} (HTTP ${status})\n` });
@@ -38,10 +43,12 @@ const holdTestPath = 'client/src/util/test/pwa_assets_generator_hold.test.ts';
 
 // Git with no global or system config, so the identity fallback is tested on every machine alike.
 const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+/** @type {import('../scripts/lift.mjs').Exec} */
 const exec = (file, args, { cwd } = {}) =>
   execFileSync(file, args, { cwd, env: gitEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-const git = (cwd, args) => exec('git', args, { cwd });
+const git = (/** @type {string} */ cwd, /** @type {string[]} */ args) => exec('git', args, { cwd });
 
+/** @type {string[]} */
 const roots = [];
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
@@ -71,16 +78,20 @@ function makeRepo(config = holdsConfig) {
 }
 
 /** A fake GitHub: `responses` maps a route to its answer (a function receives the call's options). */
+/** @param {Record<string, unknown>} [responses] */
 function fakeGithub(responses = {}) {
+  /** @type {{ route?: string, gh?: string[], method?: string, body?: any }[]} */
   const calls = [];
   return {
     calls,
+    /** @type {import('../lib/github.mjs').GhApi} */
     ghApi(route, options = {}) {
       calls.push({ route, ...options });
       if (!(route in responses)) throw new Error(`unexpected route ${route}`);
       const answer = responses[route];
       return typeof answer === 'function' ? answer(options) : structuredClone(answer);
     },
+    /** @param {string[]} args */
     gh(args) {
       calls.push({ gh: args });
       return '';
@@ -89,11 +100,12 @@ function fakeGithub(responses = {}) {
 }
 
 function capture() {
+  /** @type {string[]} */
   const lines = [];
-  return { out: (line) => lines.push(line), text: () => lines.join('') };
+  return { out: (/** @type {string} */ line) => lines.push(line), text: () => lines.join('') };
 }
 
-const githubForNewPr = (overrides = {}) =>
+const githubForNewPr = (/** @type {Record<string, unknown>} */ overrides = {}) =>
   fakeGithub({
     [openPrsRoute]: [],
     [`repos/${repository}`]: { default_branch: 'main' },
@@ -170,17 +182,15 @@ describe('lift', () => {
       'M\trenovate.json',
     ]);
     const pushedConfig = JSON.parse(git(origin, ['show', `${branch}:renovate.json`]));
-    expect(pushedConfig.packageRules.map((rule) => rule.matchPackageNames ?? rule.matchPackagePatterns)).toEqual([
-      ['pdfjs-dist'],
-      ['eslint'],
-      ['motion'],
-    ]);
+    expect(
+      pushedConfig.packageRules.map((/** @type {any} */ rule) => rule.matchPackageNames ?? rule.matchPackagePatterns),
+    ).toEqual([['pdfjs-dist'], ['eslint'], ['motion']]);
 
     // The PR: its title, base, head and body, then squash auto-merge.
     const create = github.calls.find((call) => call.route === `repos/${repository}/pulls`);
-    expect(create.method).toBe('POST');
-    expect(create.body).toMatchObject({ title, head: branch, base: 'main' });
-    expect(create.body.body).toContain(
+    expect(create?.method).toBe('POST');
+    expect(create?.body).toMatchObject({ title, head: branch, base: 'main' });
+    expect(create?.body.body).toContain(
       '\nLifted holds:\n' +
         '- @vite-pwa/assets-generator (held until 2026-09-30): vite-plugin-pwa only accepts the generator at v1 as a ' +
         "peer. remove after 2026-09-30: check whether vite-plugin-pwa's peer range accepts v2\n" +
@@ -189,12 +199,12 @@ describe('lift', () => {
         '- @typescript/native-preview (held until 2026-10-12): typescript 7 needs the native preview of the type ' +
         'checker. remove after 2026-10-12: try tsgo on the client\n',
     );
-    expect(create.body.body).toContain(`\nDeleted condition tests:\n- ${holdTestPath}\n`);
-    expect(create.body.body).toContain(
+    expect(create?.body.body).toContain(`\nDeleted condition tests:\n- ${holdTestPath}\n`);
+    expect(create?.body.body).toContain(
       '\nNot touched (malformed marker):\n- motion 15 drops the layout prop we use. remove after 2026-02-30: check ' +
         'the migration guide (not a real calendar date: 2026-02-30)\n',
     );
-    expect(create.body.body.trimEnd().endsWith(liftMarker)).toBe(true);
+    expect(create?.body.body.trimEnd().endsWith(liftMarker)).toBe(true);
     expect(github.calls.at(-1)).toEqual({ gh: ['pr', 'merge', prUrl, '--auto', '--squash'] });
   });
 
@@ -217,7 +227,7 @@ describe('lift', () => {
     const result = lift({ today, repository, cwd: work }, { github, exec, out: () => {} });
 
     expect(result).toMatchObject({ opened: true, prUrl: 'https://github.com/x/y/pull/3899', reused: true });
-    expect(github.calls.map((call) => call.route ?? call.gh.join(' '))).toEqual([
+    expect(github.calls.map((call) => call.route ?? call.gh?.join(' '))).toEqual([
       `repos/${repository}`,
       openPrsRoute,
       protectionRoute,
@@ -268,7 +278,7 @@ describe('lift', () => {
       removed: '2',
       summary: `previous lift PR still open: ${earlier.html_url}`,
     });
-    expect(github.calls.map((call) => call.route ?? call.gh.join(' '))).toEqual([`repos/${repository}`, openPrsRoute]);
+    expect(github.calls.map((call) => call.route ?? call.gh?.join(' '))).toEqual([`repos/${repository}`, openPrsRoute]);
     expect(git(origin, ['branch', '--list']).trim()).toBe('* main');
     expect(git(work, ['status', '--porcelain'])).toBe('');
   });
@@ -317,7 +327,8 @@ describe('lift', () => {
   });
 
   describe('auto-merge and the required checks', () => {
-    const autoMergeCalls = (github) => github.calls.filter((call) => call.gh?.[0] === 'pr');
+    const autoMergeCalls = (/** @type {ReturnType<typeof fakeGithub>} */ github) =>
+      github.calls.filter((call) => call.gh?.[0] === 'pr');
 
     it('enables auto-merge when a ruleset requires checks and branch protection is absent', () => {
       const github = githubForNewPr({
@@ -338,7 +349,7 @@ describe('lift', () => {
         `${lifted3}; auto-merge was not enabled because the default branch requires no checks`,
       );
       const create = github.calls.find((call) => call.method === 'POST');
-      expect(create.body.body).toContain('Auto-merge was not enabled: the default branch requires no status checks');
+      expect(create?.body.body).toContain('Auto-merge was not enabled: the default branch requires no status checks');
     });
 
     it('enables auto-merge with a note when the protection cannot be read', () => {
@@ -410,7 +421,9 @@ describe('prTitle and summarize', () => {
 describe('formatPrBody', () => {
   it('leaves out the sections that have nothing in them', () => {
     const body = formatPrBody({
-      removed: [{ packages: ['left-pad'], date: '2026-01-31', description: 'remove after 2026-01-31: retry' }],
+      removed: [
+        { packages: ['left-pad'], date: '2026-01-31', description: 'remove after 2026-01-31: retry', index: 0 },
+      ],
       malformed: [],
       conditionTests: [],
       configPath: 'renovate.json',
@@ -481,7 +494,7 @@ describe('main', () => {
     const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'renovate-doctor-lift-'));
     roots.push(runnerTemp);
     const resultFile = path.join(runnerTemp, 'renovate-doctor', 'lift.json');
-    const run = (argv) => {
+    const run = (/** @type {string[]} */ argv) => {
       const code = main({
         argv,
         env: { GITHUB_REPOSITORY: repository, RUNNER_TEMP: runnerTemp },

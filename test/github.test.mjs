@@ -2,11 +2,24 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createGithub } from '../lib/github.mjs';
 
+/** @typedef {import('../lib/github.mjs').Exec} Exec */
+
 // An error shaped like the one execFileSync throws when `gh` exits non-zero.
+/** @param {string} stderr */
 function ghFailure(stderr) {
   return Object.assign(new Error(`Command failed: gh api\n${stderr}`), { status: 1, stderr });
 }
 
+/**
+ * A fake `exec` whose recorded calls carry the adapter's argument types.
+ *
+ * @param {Exec} impl
+ */
+function fakeExec(impl) {
+  return vi.fn(impl);
+}
+
+/** @param {Exec} exec */
 function fakeGithub(exec) {
   const sleep = vi.fn();
   return { ...createGithub({ exec, sleep }), sleep };
@@ -14,19 +27,19 @@ function fakeGithub(exec) {
 
 describe('ghApi', () => {
   it('calls `gh api` on the route and returns the parsed JSON', () => {
-    const exec = vi.fn(() => '{"number":12,"state":"open"}\n');
+    const exec = fakeExec(() => '{"number":12,"state":"open"}\n');
     const { ghApi } = fakeGithub(exec);
     expect(ghApi('repos/o/r/pulls/12')).toEqual({ number: 12, state: 'open' });
     expect(exec).toHaveBeenCalledWith('gh', ['api', 'repos/o/r/pulls/12'], { input: undefined });
   });
 
   it('returns undefined for an empty body, such as a 204', () => {
-    const { ghApi } = fakeGithub(vi.fn(() => ''));
+    const { ghApi } = fakeGithub(fakeExec(() => ''));
     expect(ghApi('repos/o/r/issues/comments/1', { method: 'DELETE' })).toBeUndefined();
   });
 
   it('follows every page when asked and joins list pages into one array', () => {
-    const exec = vi.fn(() => JSON.stringify([[{ id: 1 }, { id: 2 }], [{ id: 3 }]]));
+    const exec = fakeExec(() => JSON.stringify([[{ id: 1 }, { id: 2 }], [{ id: 3 }]]));
     const { ghApi } = fakeGithub(exec);
     expect(ghApi('repos/o/r/pulls?per_page=100', { paginate: true })).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
     expect(exec.mock.calls[0][1]).toEqual(['api', 'repos/o/r/pulls?per_page=100', '--paginate', '--slurp']);
@@ -37,7 +50,7 @@ describe('ghApi', () => {
       { total_count: 3, jobs: [{ id: 1 }, { id: 2 }] },
       { total_count: 3, jobs: [{ id: 3 }] },
     ];
-    const { ghApi } = fakeGithub(vi.fn(() => JSON.stringify(pages)));
+    const { ghApi } = fakeGithub(fakeExec(() => JSON.stringify(pages)));
     expect(ghApi('repos/o/r/actions/runs/9/jobs', { paginate: true })).toEqual({
       total_count: 3,
       jobs: [{ id: 1 }, { id: 2 }, { id: 3 }],
@@ -45,20 +58,20 @@ describe('ghApi', () => {
   });
 
   it('does not paginate unless asked', () => {
-    const exec = vi.fn(() => '[]');
+    const exec = fakeExec(() => '[]');
     fakeGithub(exec).ghApi('repos/o/r/pulls');
     expect(exec.mock.calls[0][1]).not.toContain('--paginate');
   });
 
   it('sends a body as JSON on stdin, with the method', () => {
-    const exec = vi.fn(() => '{"id":5}');
+    const exec = fakeExec(() => '{"id":5}');
     const { ghApi } = fakeGithub(exec);
     const body = { body: '<!-- renovate-doctor sha=abc -->\n**renovate-doctor**', labels: ['a', 'b'] };
     expect(ghApi('repos/o/r/issues/12/comments', { method: 'POST', body })).toEqual({ id: 5 });
     const [file, args, { input }] = exec.mock.calls[0];
     expect(file).toBe('gh');
     expect(args).toEqual(['api', 'repos/o/r/issues/12/comments', '--method', 'POST', '--input', '-']);
-    expect(JSON.parse(input)).toEqual(body);
+    expect(JSON.parse(input ?? '')).toEqual(body);
   });
 
   it('retries a transient failure with a growing pause, then returns the answer', () => {
@@ -111,7 +124,7 @@ describe('ghApi', () => {
 
 describe('gh', () => {
   it('runs an arbitrary gh command and returns its stdout', () => {
-    const exec = vi.fn(() => 'https://github.com/o/r/pull/7\n');
+    const exec = fakeExec(() => 'https://github.com/o/r/pull/7\n');
     const { gh } = fakeGithub(exec);
     expect(gh(['pr', 'merge', '7', '--auto', '--squash', '--repo', 'o/r'])).toBe('https://github.com/o/r/pull/7\n');
     expect(exec).toHaveBeenCalledWith('gh', ['pr', 'merge', '7', '--auto', '--squash', '--repo', 'o/r'], {
