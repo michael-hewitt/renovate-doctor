@@ -429,6 +429,25 @@ describe('decide, on a manual run', () => {
     expect(result.verdict).toMatch(/^would escalate: attempts: 2 commits on PR #3814/);
   });
 
+  it('never launches a dry run on a PR that is not Renovate’s', () => {
+    const github = fakeGithub({
+      [routes.pull]: { ...openPull, user: { ...openPull.user, login: 'octocat', type: 'User' } },
+      [routes.run(run.id)]: run,
+    });
+    const result = decide(
+      { eventName: 'workflow_dispatch', event: {}, repository, pr: 3814, runId: run.id, dryRun: true },
+      { github, sleep },
+    );
+    expect(result).toMatchObject({
+      launch: false,
+      verdict: 'would skip: renovate: PR #3814 is by octocat, not renovate[bot]',
+    });
+    expect(result.reason).toBe(`dry run: ${result.verdict} (failure and renovate hold even in a dry run)`);
+    // The conditions after the enforced one were not evaluated, so nothing past it was asked of GitHub.
+    expect(result.checks.map((check) => check.condition)).toEqual(['failure', 'renovate']);
+    expect(github.routes()).toEqual([routes.pull, routes.run(run.id)]);
+  });
+
   it('without a run id, triages every failed run on the PR head', () => {
     const github = fakeGithub({ [routes.pull]: openPull });
     const result = decide({ eventName: 'workflow_dispatch', event: {}, repository, pr: 3814 }, { github, sleep });
@@ -443,6 +462,24 @@ describe('decide, on a manual run', () => {
     const result = decide({ eventName: 'workflow_dispatch', event: {}, repository, pr: 3814 }, { github, sleep });
     expect(result.launch).toBe(false);
     expect(result.reason).toBe('failure: no run on 457ec6c concluded failure');
+  });
+
+  it('takes a push naming a PR as a manual run, so the caller can be rehearsed before it is merged', () => {
+    const github = fakeGithub({ [routes.pull]: openPull, [routes.run(run.id)]: run });
+    const result = decide(
+      { eventName: 'push', event: {}, repository, pr: 3814, runId: run.id, dryRun: true },
+      { github, sleep },
+    );
+    expect(result).toMatchObject({ launch: true, prNumber: 3814, failedRunIds: [37993773276] });
+    expect(result.verdict).toMatch(/^would launch: /);
+  });
+
+  it('refuses a push that names no PR', () => {
+    const result = decide({ eventName: 'push', event: {}, repository }, { github: fakeGithub(), sleep });
+    expect(result.launch).toBe(false);
+    expect(result.reason).toBe(
+      'gate error: renovate-doctor triages workflow_run and workflow_dispatch events, not push',
+    );
   });
 
   it('refuses a manual run without a PR', () => {
