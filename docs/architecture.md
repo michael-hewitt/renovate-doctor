@@ -202,7 +202,10 @@ Decision, in order; the first failing condition is the reason:
 2. **renovate**: the run comes from this repository (`head_repository.full_name` equals `GITHUB_REPOSITORY`;
    otherwise `renovate: run <id> came from fork <name>`, since a fork can push Renovate's exact commit to a
    same-named branch), the head branch starts with `renovate/`, and the PR's author is `renovate[bot]`.
-   Fork runs on the head SHA are also left out of `failed_run_ids`.
+   For a manual run with `run_id`, the run's `head_branch` must be the PR's `head.ref` (otherwise
+   `renovate: run <id> is on <branch>, not the PR's <ref>`), so a Renovate PR's number cannot carry the agent
+   onto another branch's failed run; like the rest of this condition, it holds in a dry run too. Fork runs on
+   the head SHA are also left out of `failed_run_ids`.
 3. **open**: exactly one open PR has that head branch, and its head SHA equals the run's head SHA (for a manual
    run with `run_id`, the run's head may be older than the PR's; this is reported and, outside dry run, skips).
 4. **not handled**: no PR comment carries a marker `<!-- renovate-doctor sha=<head sha> outcome=<outcome> -->`

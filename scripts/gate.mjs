@@ -331,11 +331,14 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
   else failureDetail = `no run on ${short(result.headSha)} concluded failure`;
   if (!record('failure', failed, failureDetail)) return skip();
 
-  // 2. renovate. The run must come from this repository, not a fork pushing to a same-named branch. In a
-  // workflow_run the PR is found from the branch, which only makes sense once the run and the branch are
-  // Renovate's; the author is checked as soon as there is a PR to read it from.
+  // 2. renovate. The run must come from this repository, not a fork pushing to a same-named branch. A
+  // run a manual run names must also be on the PR's branch: otherwise a Renovate PR's number would carry
+  // the agent onto any failed run's commit. In a workflow_run the PR is found from the branch, which only
+  // makes sense once the run and the branch are Renovate's; the author is checked as soon as there is a
+  // PR to read it from.
   const runRepository = run?.head_repository?.full_name;
   const fromFork = Boolean(run) && runRepository !== repository;
+  const offBranch = eventName === 'workflow_dispatch' && Boolean(input.runId) && run.head_branch !== pr.head.ref;
   const renovateBranch = branch.startsWith('renovate/');
   /** @type {any[] | undefined} */
   let openPrs;
@@ -355,6 +358,9 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
   if (fromFork) {
     renovatePass = false;
     renovateDetail = `run ${run.id} came from fork ${runRepository ?? '(unknown repository)'}`;
+  } else if (offBranch) {
+    renovatePass = false;
+    renovateDetail = `run ${run.id} is on ${run.head_branch || '(no branch)'}, not the PR's ${pr.head.ref}`;
   } else if (!renovateBranch) {
     renovatePass = false;
     renovateDetail = `head branch ${branch || '(none)'} is not a Renovate branch`;

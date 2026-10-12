@@ -388,6 +388,25 @@ describe('decide, on a workflow_run', () => {
 });
 
 describe('decide, on a manual run', () => {
+  it.each([false, true])("refuses a run id from another branch than the PR's (dry run %s)", (dryRun) => {
+    const elsewhere = { ...run, id: 38000000001, head_branch: 'feature/new-tuner', head_sha: 'c0ffee'.padEnd(40, '0') };
+    const github = fakeGithub({ [routes.pull]: openPull, [routes.run(elsewhere.id)]: elsewhere });
+    const result = decide(
+      { eventName: 'workflow_dispatch', event: {}, repository, pr: 3814, runId: elsewhere.id, dryRun },
+      { github, sleep },
+    );
+    expect(result.launch).toBe(false);
+    expect(result.checks.find((check) => check.condition === 'renovate').detail).toBe(
+      "run 38000000001 is on feature/new-tuner, not the PR's renovate/vite-plugin-pwa-2.x",
+    );
+    expect(result.reason).toMatch(
+      dryRun
+        ? /^dry run: would skip: renovate: run 38000000001 is on feature\/new-tuner, not the PR's /
+        : /^renovate: run 38000000001 is on feature\/new-tuner, not the PR's renovate\/vite-plugin-pwa-2\.x$/,
+    );
+    expect(result.logs).toEqual({});
+  });
+
   it('rehearses a merged PR’s old failed run in a dry run, saying why it would skip', () => {
     const github = fakeGithub({
       [routes.pull]: mergedPull,
