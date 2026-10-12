@@ -8,14 +8,22 @@
 // comment without an agent. When the gate launches, it also writes each failed run's failed-job logs to
 // `$RUNNER_TEMP/renovate-doctor/logs/<run_id>.log` for the agent.
 //
+// Only runs from the calling repository count: a fork can push Renovate's exact commit to a branch of
+// the same name, and its runs must neither trigger triage of the real PR nor reach the agent. Only
+// comments by the doctor's own accounts count as markers: a marker is invisible when rendered, and
+// anyone may comment, so a stranger's marker is ignored (with a warning on the run, so a wrong login in
+// the list shows up there rather than as a silent second triage).
+//
 // Environment: GITHUB_EVENT_NAME (`workflow_run` or `workflow_dispatch`), GITHUB_EVENT_PATH,
 // GITHUB_REPOSITORY, GH_TOKEN (read by `gh`), RUNNER_TEMP, INPUT_PR, INPUT_RUN_ID, INPUT_DRY_RUN
-// (`true`/`false`), RERUN_WORKFLOW, GITHUB_OUTPUT, and GITHUB_WORKFLOW_REF (set by Actions; it names the
-// caller's own workflow file, whose failed runs are not CI failures to triage).
+// (`true`/`false`), RERUN_WORKFLOW, GITHUB_OUTPUT, GITHUB_WORKFLOW_REF (set by Actions; it names the
+// caller's own workflow file, whose failed runs are not CI failures to triage), and
+// RENOVATE_DOCTOR_COMMENT_AUTHORS (comma-separated logins whose markers count; default
+// `claude[bot],github-actions[bot]`, the agent's App and the report step's job token).
 //
-// The script always exits 0. A gate that crashed must still let the report step run and must never
-// launch the agent, so any exception becomes `launch=false` with `reason=gate error: ...`, and the stack
-// goes to stderr for whoever reads the run.
+// The script always exits 0. A gate that crashed must never launch the agent, and must not go unnoticed
+// either, so any exception becomes `launch=false`, `reason=gate error: ...` and `outcome=failed`, which
+// the report step emails; the stack goes to stderr for whoever reads the run.
 
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -51,24 +59,34 @@ export function handledMarker(sha, outcome) {
 // (or from a hand-written comment); it is read as handled, since staying quiet is the safe mistake.
 const markerPattern = /<!-- renovate-doctor sha=(\S+?)(?: outcome=(\S+?))? -->/g;
 
+/** The accounts that post renovate-doctor comments: the agent's GitHub App and the report's job token. */
+export const defaultCommentAuthors = ['claude[bot]', 'github-actions[bot]'];
+
 /**
- * What the PR's comments say about `sha`: the comment that settled it (any outcome but `rerun`), if
- * any, and the comment recording a rerun of it, if any.
+ * What the doctor's own comments say about `sha`: the comment that settled it (any outcome but
+ * `rerun`), if any, and the comment recording a rerun of it, if any. A marker for `sha` in a comment by
+ * anyone not in `authors` counts for nothing and is listed in `ignored`.
  *
- * @param {{ body?: string, html_url?: string }[]} comments
+ * @param {{ body?: string, html_url?: string, user?: { login?: string } }[]} comments
  * @param {string} sha
+ * @param {{ authors?: string[] }} [options]
  */
-export function readMarkers(comments, sha) {
+export function readMarkers(comments, sha, { authors = defaultCommentAuthors } = {}) {
   let handled;
   let rerun;
+  const ignored = [];
   for (const comment of comments) {
     for (const [, markedSha, outcome] of `${comment.body ?? ''}`.matchAll(markerPattern)) {
       if (markedSha !== sha) continue;
+      if (!authors.includes(comment.user?.login ?? '')) {
+        ignored.push(comment);
+        break;
+      }
       if (outcome === 'rerun') rerun ??= comment;
       else handled ??= comment;
     }
   }
-  return { handled, rerun };
+  return { handled, rerun, ignored };
 }
 
 /**
@@ -81,6 +99,7 @@ export function readMarkers(comments, sha) {
  *   dryRun?: boolean,
  *   rerunWorkflow?: string,
  *   ownWorkflowPath?: string,
+ *   commentAuthors?: string[],
  * }} GateInput
  *
  * @typedef {{ condition: string, result: 'pass' | 'fail' | 'unknown', detail: string }} Check
@@ -101,6 +120,7 @@ export function readMarkers(comments, sha) {
  *   rerunBefore: boolean,
  *   checks: Check[],
  *   logs: Record<string, string>,
+ *   warnings: string[],
  *   error?: Error,
  * }} GateResult
  */
@@ -122,6 +142,7 @@ function blankResult() {
     rerunBefore: false,
     checks: /** @type {Check[]} */ ([]),
     logs: /** @type {Record<string, string>} */ ({}),
+    warnings: /** @type {string[]} */ ([]),
   };
 }
 
@@ -156,17 +177,51 @@ export function decide(input, deps) {
   try {
     return evaluate(input, deps, result);
   } catch (error) {
-    return { ...result, launch: false, reason: `gate error: ${oneLine(error?.message ?? error)}`, verdict: '', error };
+    return gateErrorResult(error, result);
   }
 }
 
-/** The result for an exception raised before `decide` could run (an unreadable event file, say). */
-export function gateErrorResult(error) {
-  return { ...blankResult(), reason: `gate error: ${oneLine(error?.message ?? error)}`, error };
+/**
+ * The result for an exception, keeping whatever had been resolved before it (`partial`). The gate could
+ * not decide, so it never launches; the `failed` outcome makes the report step email the error, since a
+ * real failure on a Renovate PR may be going untriaged.
+ *
+ * @param {unknown} error
+ * @param {Partial<GateResult>} [partial]
+ * @returns {GateResult}
+ */
+export function gateErrorResult(error, partial = {}) {
+  const reason = `gate error: ${oneLine(/** @type {any} */ (error)?.message ?? error)}`;
+  // The first stack frame says where it broke; the message is already in the reason.
+  const frame = `${/** @type {any} */ (error)?.stack ?? ''}`
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line.startsWith('at '));
+  return {
+    ...blankResult(),
+    ...partial,
+    launch: false,
+    reason,
+    verdict: '',
+    outcome: 'failed',
+    summary:
+      `The renovate-doctor gate failed, so the agent did not run and nothing was done on the PR: ${reason}` +
+      `${frame ? ` (${frame})` : ''}. The run log has the full stack.`,
+    logs: {},
+    error: /** @type {Error} */ (error),
+  };
 }
 
 function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
-  const { eventName, event, repository, dryRun = false, rerunWorkflow = '', ownWorkflowPath = '' } = input;
+  const {
+    eventName,
+    event,
+    repository,
+    dryRun = false,
+    rerunWorkflow = '',
+    ownWorkflowPath = '',
+    commentAuthors = defaultCommentAuthors,
+  } = input;
   if (!repository || !repository.includes('/')) throw new Error(`GITHUB_REPOSITORY is not owner/repo: ${repository}`);
   const owner = repository.split('/')[0];
 
@@ -180,14 +235,20 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
     return logCache.get(runId);
   }
 
-  // Every failed run on a commit, the caller's own renovate-doctor workflow excluded: a doctor run that
-  // failed is not a CI failure, and the agent must not be pointed at itself.
+  // Every failed run on a commit from this repository. The caller's own renovate-doctor workflow is left
+  // out (a doctor run that failed is not a CI failure, and the agent must not be pointed at itself), and
+  // so are runs from forks, whose logs and code are not the PR's.
   function failedRunsOn(sha) {
     const { workflow_runs: runs = [] } = github.ghApi(
       `repos/${repository}/actions/runs?head_sha=${sha}&status=failure&per_page=100`,
       { paginate: true },
     );
-    return runs.filter((run) => run.conclusion === 'failure' && !(ownWorkflowPath && run.path === ownWorkflowPath));
+    return runs.filter(
+      (run) =>
+        run.conclusion === 'failure' &&
+        run.head_repository?.full_name === repository &&
+        !(ownWorkflowPath && run.path === ownWorkflowPath),
+    );
   }
 
   /** The first failed condition, as `<condition>: <detail>`. */
@@ -253,12 +314,15 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
   else failureDetail = `no run on ${short(result.headSha)} concluded failure`;
   if (!record('failure', failed, failureDetail)) return skip();
 
-  // 2. renovate. In a workflow_run the PR is found from the branch, which only makes sense once the
-  // branch is Renovate's; the author is checked as soon as there is a PR to read it from.
+  // 2. renovate. The run must come from this repository, not a fork pushing to a same-named branch. In a
+  // workflow_run the PR is found from the branch, which only makes sense once the run and the branch are
+  // Renovate's; the author is checked as soon as there is a PR to read it from.
+  const runRepository = run?.head_repository?.full_name;
+  const fromFork = Boolean(run) && runRepository !== repository;
   const renovateBranch = branch.startsWith('renovate/');
   /** @type {any[] | undefined} */
   let openPrs;
-  if (eventName === 'workflow_run' && (renovateBranch || dryRun)) {
+  if (eventName === 'workflow_run' && ((renovateBranch && !fromFork) || dryRun)) {
     const head = encodeURIComponent(`${owner}:${branch}`);
     openPrs = github.ghApi(`repos/${repository}/pulls?head=${head}&state=open&per_page=100`);
     if (openPrs.length === 1) pr = openPrs[0];
@@ -271,7 +335,10 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
   const author = pr?.user?.login;
   let renovatePass;
   let renovateDetail;
-  if (!renovateBranch) {
+  if (fromFork) {
+    renovatePass = false;
+    renovateDetail = `run ${run.id} came from fork ${runRepository ?? '(unknown repository)'}`;
+  } else if (!renovateBranch) {
     renovatePass = false;
     renovateDetail = `head branch ${branch || '(none)'} is not a Renovate branch`;
   } else if (pr && author !== renovateBot) {
@@ -310,7 +377,13 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
     const comments = github.ghApi(`repos/${repository}/issues/${pr.number}/comments?per_page=100`, {
       paginate: true,
     });
-    const { handled, rerun } = readMarkers(comments, result.headSha);
+    const { handled, rerun, ignored } = readMarkers(comments, result.headSha, { authors: commentAuthors });
+    for (const comment of ignored) {
+      result.warnings.push(
+        `::warning::renovate-doctor ignored a marker for ${short(result.headSha)} by ${comment.user?.login ?? '(unknown)'}, ` +
+          `who is not in RENOVATE_DOCTOR_COMMENT_AUTHORS (${commentAuthors.join(',')}): ${comment.html_url}`,
+      );
+    }
     // The agent is told its own rerun already happened, so the same failure twice is not rerun again.
     result.rerunBefore = Boolean(rerun);
     let detail;
@@ -494,6 +567,15 @@ function workflowPath(workflowRef, repository) {
   return withoutRef.startsWith(`${repository}/`) ? withoutRef.slice(repository.length + 1) : '';
 }
 
+/** The comma-separated author list, or the default when the variable is unset or empty. */
+export function commentAuthorsFrom(value) {
+  const authors = `${value ?? ''}`
+    .split(',')
+    .map((login) => login.trim())
+    .filter(Boolean);
+  return authors.length ? authors : defaultCommentAuthors;
+}
+
 function readInput(env) {
   const eventName = env.GITHUB_EVENT_NAME ?? '';
   const event = env.GITHUB_EVENT_PATH ? JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8')) : {};
@@ -507,6 +589,7 @@ function readInput(env) {
     dryRun: env.INPUT_DRY_RUN === 'true',
     rerunWorkflow: env.RERUN_WORKFLOW ?? '',
     ownWorkflowPath: workflowPath(env.GITHUB_WORKFLOW_REF, repository),
+    commentAuthors: commentAuthorsFrom(env.RENOVATE_DOCTOR_COMMENT_AUTHORS),
   };
 }
 
@@ -532,6 +615,7 @@ export function main({
   }
   if (result.error) err(`renovate-doctor gate error:\n${result.error?.stack ?? result.error}\n`);
 
+  for (const warning of result.warnings ?? []) out(`${warning}\n`);
   out(describeDecision(result, { dryRun: input?.dryRun }));
 
   try {

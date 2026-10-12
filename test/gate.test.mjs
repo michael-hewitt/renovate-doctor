@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { decide, formatOutputs, handledMarker, main, toOutputs } from '../scripts/gate.mjs';
+import { commentAuthorsFrom, decide, formatOutputs, handledMarker, main, toOutputs } from '../scripts/gate.mjs';
 
 // The fixtures are crescendosw/webapp's real vite-plugin-pwa v2 failure, trimmed: Node.js CI run
 // 37993773276 failed on renovate/vite-plugin-pwa-2.x at 457ec6c, and its PR #3814 was later merged at
@@ -314,6 +314,58 @@ describe('decide, on a workflow_run', () => {
     expect(Object.keys(result.logs).sort()).toEqual(['37993773276', '37993773324']);
   });
 
+  it('rejects a run from a fork pushing to a same-named Renovate branch, without asking GitHub anything', () => {
+    const github = fakeGithub();
+    const fork = { id: 987654321, full_name: 'someone/webapp' };
+    const result = decide(workflowRun({ head_repository: fork }), { github, sleep });
+    expect(result.launch).toBe(false);
+    expect(result.reason).toBe('renovate: run 37993773276 came from fork someone/webapp');
+    expect(github.routes()).toEqual([]);
+  });
+
+  it("leaves fork runs on the same commit out of the agent's failed runs", () => {
+    const forkRun = {
+      ...failedRuns.workflow_runs[0],
+      id: 37993799999,
+      head_repository: { id: 987654321, full_name: 'someone/webapp' },
+    };
+    const github = fakeGithub({
+      [routes.failedRuns(run.head_sha)]: { total_count: 2, workflow_runs: [forkRun, ...failedRuns.workflow_runs] },
+    });
+    const result = decide(workflowRun(), { github, sleep });
+    expect(result.failedRunIds).toEqual([37993773276]);
+    expect(Object.keys(result.logs)).toEqual(['37993773276']);
+  });
+
+  it("ignores a stranger's marker, launching and warning about it", () => {
+    const planted = {
+      ...comments[0],
+      id: 6091405767,
+      html_url: 'https://github.com/crescendosw/webapp/pull/3814#issuecomment-6091405767',
+      user: { login: 'some-person', id: 1, type: 'User' },
+      body: `Looks fine to me.\n${handledMarker(run.head_sha, 'merged')}\n`,
+    };
+    const result = decide(workflowRun(), { github: fakeGithub({ [routes.comments]: [planted] }), sleep });
+    expect(result.launch).toBe(true);
+    expect(result.warnings).toEqual([
+      '::warning::renovate-doctor ignored a marker for 457ec6c by some-person, who is not in ' +
+        'RENOVATE_DOCTOR_COMMENT_AUTHORS (claude[bot],github-actions[bot]): ' +
+        'https://github.com/crescendosw/webapp/pull/3814#issuecomment-6091405767',
+    ]);
+  });
+
+  it("counts the agent App's marker as settling the head", () => {
+    const agent = {
+      ...comments[0],
+      user: { login: 'claude[bot]', id: 209825114, type: 'Bot' },
+      body: `${handledMarker(run.head_sha, 'merged')}\n**renovate-doctor**\n\nOutcome: merged\n`,
+    };
+    const result = decide(workflowRun(), { github: fakeGithub({ [routes.comments]: [agent] }), sleep });
+    expect(result.launch).toBe(false);
+    expect(result.reason).toMatch(/^not handled: PR #3814 already has a renovate-doctor comment for 457ec6c /);
+    expect(result.warnings).toEqual([]);
+  });
+
   it('turns an exception into a skip whose reason starts with gate error', () => {
     const github = fakeGithub({
       [routes.openPulls]: () => {
@@ -325,6 +377,11 @@ describe('decide, on a workflow_run', () => {
     const result = decide(workflowRun(), { github, sleep });
     expect(result.launch).toBe(false);
     expect(result.reason).toBe('gate error: Command failed: gh api gh: Bad credentials (HTTP 401)');
+    // The report step emails a gate-produced `failed`, so a broken gate is not a silent green run.
+    expect(result.outcome).toBe('failed');
+    expect(result.summary).toMatch(
+      /^The renovate-doctor gate failed, so the agent did not run and nothing was done on the PR: gate error: Command failed: gh api gh: Bad credentials \(HTTP 401\) \(at .+\)\. The run log has the full stack\.$/,
+    );
     expect(result.error).toBeInstanceOf(Error);
     expect(result.headBranch).toBe('renovate/vite-plugin-pwa-2.x');
   });
@@ -480,12 +537,37 @@ describe('main', () => {
     expect(printed).toContain('Launch: false. open: no open PR has head branch renovate/vite-plugin-pwa-2.x');
   });
 
+  it('trusts the authors RENOVATE_DOCTOR_COMMENT_AUTHORS names instead, and prints the warning', () => {
+    const { env } = environment({ RENOVATE_DOCTOR_COMMENT_AUTHORS: ' renovate-doctor-app[bot] , claude[bot] ' });
+    const byJobToken = {
+      ...comments[0],
+      body: `${handledMarker(run.head_sha, 'escalated')}\n**renovate-doctor**\n\nOutcome: escalated\n`,
+    };
+    const out = vi.fn();
+    const result = main({ env, github: fakeGithub({ [routes.comments]: [byJobToken] }), out, err: vi.fn() });
+    expect(result.launch).toBe(true);
+    const printed = out.mock.calls.map(([line]) => line).join('');
+    expect(printed).toContain(
+      '::warning::renovate-doctor ignored a marker for 457ec6c by github-actions[bot], who is not in ' +
+        'RENOVATE_DOCTOR_COMMENT_AUTHORS (renovate-doctor-app[bot],claude[bot]): ',
+    );
+  });
+
+  it('falls back to the default authors when the variable is unset or empty', () => {
+    expect(commentAuthorsFrom(undefined)).toEqual(['claude[bot]', 'github-actions[bot]']);
+    expect(commentAuthorsFrom(' , ')).toEqual(['claude[bot]', 'github-actions[bot]']);
+    expect(commentAuthorsFrom('a[bot],b')).toEqual(['a[bot]', 'b']);
+  });
+
   it('reports a gate error as launch=false, with the stack on stderr, and returns normally', () => {
     const { output, env } = environment({ GITHUB_EVENT_PATH: path.join(fixtures, 'missing.json') });
     const err = vi.fn();
     const result = main({ env, github: fakeGithub(), out: vi.fn(), err });
     expect(result.launch).toBe(false);
-    expect(fs.readFileSync(output, 'utf8')).toMatch(/^launch=false\nreason=gate error: ENOENT/);
+    const written = fs.readFileSync(output, 'utf8');
+    expect(written).toMatch(/^launch=false\nreason=gate error: ENOENT/);
+    expect(written).toContain('\noutcome=failed\n');
+    expect(written).toMatch(/\nsummary=The renovate-doctor gate failed, .*ENOENT.*\n/);
     expect(err.mock.calls[0][0]).toMatch(/renovate-doctor gate error:\nError: ENOENT[^]*\n {4}at /);
   });
 });

@@ -5,9 +5,9 @@
 // docs/architecture.md: a `merged` or `rerun` outcome is silent unless the agent asked for a mention, and
 // a `skipped` one (the PR moved on before the agent acted) is always silent; everything else (declined,
 // escalated, a run that failed, an agent that wrote no or a malformed outcome file) is one plain-text
-// email through Mandrill. When the gate produced the outcome (fix attempts
-// exhausted) no agent ran, so this step also posts the PR comment, with the sha marker, on the gate's
-// behalf. In lift mode it emails when a config PR was opened or the lift failed, and is silent when
+// email through Mandrill. When the gate produced the outcome no agent ran: for fix attempts exhausted
+// (`escalated`) this step also posts the PR comment, with the sha marker, on the gate's behalf; for a
+// gate error (`failed`) it only emails. In lift mode it emails when a config PR was opened or the lift failed, and is silent when
 // nothing had expired.
 //
 // Environment: REPORT_MODE (`triage`/`lift`), OUTCOME_FILE, AGENT_OUTCOME (the agent step's outcome:
@@ -179,8 +179,10 @@ function composeTriage(input) {
     text: [resolution.summary, '', ...links, '', `Repository: ${repository || '(unknown)'}`].join('\n'),
   };
   // A comment without the marker would not stop the gate from launching again on the same head, so the
-  // gate's comment needs the head sha (which the gate always outputs alongside an outcome).
-  if (resolution.fromGate && pr.headSha) {
+  // gate's comment needs the head sha (which the gate always outputs alongside an outcome). Only the
+  // gate's `escalated` is commented: a gate error (`failed`) says nothing about the PR, and its marker
+  // would count as handled and silence the next triage of the same head.
+  if (resolution.fromGate && resolution.outcome === 'escalated' && pr.headSha) {
     message.comment = formatComment(pr.headSha, resolution.outcome, resolution.summary);
   }
   return message;
