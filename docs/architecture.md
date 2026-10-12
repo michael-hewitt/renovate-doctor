@@ -58,7 +58,7 @@ stays clean.
 | `mode`              | string  | `triage`           | `triage` or `lift`. The caller computes it from its event (`schedule` → `lift`).                                                                                     |
 | `runs_on`           | string  | `"ubuntu-latest"`  | JSON for `runs-on` (a string or an array), used as `runs-on: ${{ fromJSON(inputs.runs_on) }}`.                                                                       |
 | `package_manager`   | string  | `npm`              | `npm` or `pnpm`. With `pnpm` the workflow runs `pnpm/action-setup` (the version from `packageManager`, `dest: ${{ runner.temp }}/setup-pnpm`).                       |
-| `node_version_file` | string  | `.nvmrc`           | Passed to `actions/setup-node`.                                                                                                                                      |
+| `node_version_file` | string  | `.nvmrc`           | Passed to `actions/setup-node` after the PR head is checked out, for the install and the agent (the scripts use this repository's `.nvmrc`).                         |
 | `install`           | string  | by package manager | `npm ci` or `pnpm install --frozen-lockfile`.                                                                                                                        |
 | `typecheck`         | string  | `''`               | Empty means there is no typecheck step.                                                                                                                              |
 | `test`              | string  | by package manager | `npm test` or `pnpm test`.                                                                                                                                           |
@@ -69,6 +69,7 @@ stays clean.
 | `email_from_name`   | string  | `renovate-doctor`  | The sender's display name.                                                                                                                                           |
 | `notes_file`        | string  | `''`               | Repository-relative path of the project-notes file the agent reads after the skill.                                                                                  |
 | `rerun_workflow`    | string  | `''`               | Name of a rerun automation to defer to. When set, a first-attempt failure whose log matches the network signature is left alone.                                     |
+| `renovate_config`   | string  | `renovate.json`    | Path of the Renovate config (JSON); passed as `RENOVATE_CONFIG` to `lift.mjs` and `dashboard-recreate.mjs`.                                                          |
 | `pr`                | number  | `0`                | Manual runs: the PR to triage.                                                                                                                                       |
 | `run_id`            | number  | `0`                | Manual runs: the failed run to triage; `0` means the latest failed runs on the PR's head.                                                                            |
 | `dry_run`           | boolean | `false`            | Nothing is pushed, commented, merged, rerun or opened; the gate reports its verdict but does not stop the agent; the report is printed, not sent.                    |
@@ -85,33 +86,57 @@ moved) rather than by cancelling an agent mid-work, and GitHub keeps at most one
 
 ### Triage job
 
-1. Check out the caller at the PR head (`fetch-depth: 0`, token with write), then this repository.
-2. `actions/setup-node` (+ `pnpm/action-setup` when `package_manager` is `pnpm`).
-3. **Gate**: `node .renovate-doctor/scripts/gate.mjs` (step id `gate`). Always exits 0; its decision is in
+1. Empty `$RUNNER_TEMP/renovate-doctor` (a non-ephemeral self-hosted runner may keep a stale outcome file).
+2. Check out the caller at its default ref (`fetch-depth: 0`): the PR head is only known after the gate. Then
+   this repository at `${{ job.workflow_sha }}` (from `job.workflow_repository`), excluded from git.
+3. `actions/setup-node` with **this repository's** `.nvmrc`; its `node` path is saved as `RENOVATE_DOCTOR_NODE`
+   and every script step runs on it, whatever Node the project uses.
+4. Work out the install and test commands (inputs cannot default on another input).
+5. **Gate**: `node .renovate-doctor/scripts/gate.mjs` (step id `gate`). Always exits 0; its decision is in
    `$GITHUB_OUTPUT`.
-4. If `launch == 'true'`: `service_setup`, then `install`.
-5. The agent: `anthropics/claude-code-action@v1` with `claude_code_oauth_token`,
-   `claude_args: --allowedTools "Bash,Edit,Write,Read,Glob,Grep"`, and the prompt below. Step id `agent`,
-   `continue-on-error: true` is **not** used; the report step runs `if: always()`.
-6. Upload the transcript (`steps.agent.outputs.execution_file`) as artifact `renovate-doctor-transcript-<run_id>`,
+6. If `launch == 'true'`: fetch and check out `head_sha` detached (falling back to `refs/pull/<n>/head`);
+   `actions/setup-node` with `node_version_file` read at the head; `pnpm/action-setup` with a per-job `dest`
+   when `package_manager` is `pnpm`; `service_setup`; then `install`, with
+   `continue-on-error: true`, because a failing install is often the failure to triage. The prompt tells the
+   agent how it ended.
+7. The agent: `anthropics/claude-code-action@v1` with `claude_code_oauth_token`,
+   `allowed_bots: renovate[bot],claude[bot],github-actions[bot]` (the action refuses bot actors otherwise,
+   and a triage run's actor is always one of these),
+   `claude_args: --allowedTools "Bash,Edit,Write,Read,Glob,Grep"`, and the prompt below. Step id `agent`;
+   `continue-on-error: true` is **not** used; the report step runs `if: always()`. Its env carries
+   `RENOVATE_DOCTOR_ACTIONS_TOKEN` (the job's token, for `gh run rerun` only: the Claude App token may not
+   rerun jobs) and longer Bash timeouts; never `MANDRILL_API_KEY`.
+8. Upload the transcript (`steps.agent.outputs.execution_file`) as artifact `renovate-doctor-transcript-<run_id>`,
    30 days, `continue-on-error: true`.
-7. `service_teardown`, `if: always() && inputs.service_teardown != ''`.
-8. **Report**: `node .renovate-doctor/scripts/report.mjs`, `if: always() && (steps.gate.outputs.launch == 'true' || steps.gate.outputs.outcome != '')`.
+9. `service_teardown`, `if: always() && launch == 'true' && inputs.service_teardown != ''`.
+10. **Report**: `node .renovate-doctor/scripts/report.mjs`, `if: always() && (steps.gate.outputs.launch == 'true' || steps.gate.outputs.outcome != '')`.
+11. When the agent did not run, the gate's reason is printed and written to the job summary.
 
 The prompt (from the workflow, not the skill) says: read `.renovate-doctor/skills/renovate-doctor/SKILL.md`
-first and follow it exactly; then read `<notes_file>` if given; the PR number, head SHA and branch; the failed
-run ids and where their logs are (`$RUNNER_TEMP/renovate-doctor/logs/<run_id>.log`, written by the gate);
-the install, typecheck and test commands; the number of fix attempts already on the branch; whether this is
-a dry run; the outcome file path; and the rerun-workflow name if any.
+first and follow it exactly; then read `<notes_file>` if given; the repository; the PR number, URL and title;
+the head SHA and branch; the failed run ids and where their logs are
+(`$RUNNER_TEMP/renovate-doctor/logs/<run_id>.log`, written by the gate); the install command and how the
+workflow's install ended, the typecheck and test commands; the number of fix attempts already on the branch;
+`rerun_before`; whether this is a dry run; the outcome file path; the notes file; the rerun-workflow name if
+any; the gate's reason (and verdict, in a dry run); and that reruns use `RENOVATE_DOCTOR_ACTIONS_TOKEN`.
 
 ### Lift job
 
 1. Check out the caller's default branch (`fetch-depth: 0`: the next step reads the config's history) and
-   this repository; setup node.
-2. `node .renovate-doctor/scripts/dashboard-recreate.mjs`: for every hold lifted from the config in the last
-   60 days whose package has no open Renovate PR, tick the Dependency Dashboard checkbox naming it.
-3. `node .renovate-doctor/scripts/lift.mjs`: remove expired holds and open the config PR with auto-merge.
-4. Email (through `report.mjs` in lift mode): one email when a PR was opened or the step failed; none when
+   this repository; setup node with this repository's `.nvmrc` (only its scripts run here). Permissions:
+   `contents`, `pull-requests`, `issues` write and `id-token: write`.
+2. `node .renovate-doctor/scripts/dashboard-recreate.mjs` with the job's token (`continue-on-error`): for every
+   hold lifted from the config in the last 60 days whose package has no open Renovate PR, tick the Dependency
+   Dashboard checkbox naming it.
+3. `node .renovate-doctor/scripts/lift.mjs`, run **inside** `anthropics/claude-code-action@v1`. The action
+   exports the Claude App token, whose pushes start CI; a `GITHUB_TOKEN` push never does, so the lift PR's
+   auto-merge would wait forever. The agent may run exactly that one command
+   (`--allowedTools "Bash(<command>)" --max-turns 3`). The script's `$GITHUB_OUTPUT` inside the action is the
+   action's inner step's, so it also writes its outputs and `exit_code` to `$RUNNER_TEMP/renovate-doctor/lift.json`.
+4. A step reads `lift.json` into `LIFT_OUTCOME`: `failure` when the file is missing, `exit_code` is not 0 or the
+   agent step failed; `opened` when `opened=true` (or, in a dry run, when packages would have been lifted, so
+   the rehearsal prints the email); otherwise `nothing`.
+5. Email (through `report.mjs` in lift mode): one email when a PR was opened or the step failed; none when
    nothing had expired.
 
 ## Gate contract (`scripts/gate.mjs`)
@@ -205,7 +230,8 @@ with the rule.
 `lift.mjs`: branch `renovate-doctor/lift-<YYYY-MM-DD>` from the default branch, one commit
 `chore(deps): lift expired Renovate holds (<packages>)`, push, PR whose body lists `Lifted holds:` one package
 per line and carries `<!-- renovate-doctor lift -->`, squash auto-merge enabled. `--today YYYY-MM-DD` and
-`--dry-run` (print the diff and the PR body, change nothing on GitHub). Outputs `opened` (`true`/`false`),
+`--dry-run` (print the diff and the PR body, change nothing on GitHub). Outputs (`$GITHUB_OUTPUT`, and with
+`exit_code` to `$RUNNER_TEMP/renovate-doctor/lift.json` when `RUNNER_TEMP` is set) `opened` (`true`/`false`),
 `pr_url`, `packages`, and `summary` (one line for the email subject, e.g. `lifted 2 expired holds: foo, bar`;
 `lift failed: <why>` when the step fails). When the branch already has an open PR (a rerun of the same day's
 job, or a create whose answer was lost), that PR is reused: nothing is pushed again, auto-merge is enabled on
