@@ -78,12 +78,16 @@ on:
         description: 'Repository-relative path of the Renovate config (JSON) the lift mode edits and reads.'
         type: string
         default: renovate.json
+      # A caller forwarding its own `workflow_dispatch` inputs wraps these two in `fromJSON`
+      # (`${{ fromJSON(inputs.pr || '0') }}`): a dispatch's `number` input reaches the `inputs` context as a
+      # string, which a `type: number` input here rejects at run creation, before any job exists ("workflow
+      # file issue", no jobs). Boolean dispatch inputs are booleans and need nothing.
       pr:
-        description: 'Manual runs: the PR to triage.'
+        description: "Manual runs: the PR to triage. From a workflow_dispatch input, pass fromJSON(inputs.pr || '0')."
         type: number
         default: 0
       run_id:
-        description: 'Manual runs: the failed run to triage; 0 means the failed runs on the PR head.'
+        description: "Manual runs: the failed run to triage; 0 means the failed runs on the PR head. From a workflow_dispatch input, pass fromJSON(inputs.run_id || '0')."
         type: number
         default: 0
       dry_run:

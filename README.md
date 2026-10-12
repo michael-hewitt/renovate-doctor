@@ -225,8 +225,10 @@ jobs:
       email_to: engineering@example.com
       email_from: renovate-doctor@example.com
       notes_file: .github/renovate-doctor.md
-      pr: ${{ inputs.pr || 0 }}
-      run_id: ${{ inputs.run_id || 0 }}
+      # `fromJSON`, not the bare input: a workflow_dispatch `number` input is a string in the `inputs` context,
+      # and the reusable workflow's `type: number` rejects a string before any job exists.
+      pr: ${{ fromJSON(inputs.pr || '0') }}
+      run_id: ${{ fromJSON(inputs.run_id || '0') }}
       dry_run: ${{ inputs.dry_run == true }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
