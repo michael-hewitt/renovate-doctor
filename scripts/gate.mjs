@@ -382,9 +382,10 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
   // PR to read it from.
   const runRepository = run?.head_repository?.full_name;
   const fromFork = Boolean(run) && runRepository !== repository;
-  // A dispatch with `runId` resolved both the run and the PR above.
+  // Every event but a workflow_run is a manual run, which resolved both the run (with `runId`) and the PR
+  // above. The check holds for all of them, not only a dispatch: any manual run can name a run id.
   const offBranch =
-    eventName === 'workflow_dispatch' &&
+    eventName !== 'workflow_run' &&
     Boolean(input.runId) &&
     /** @type {WorkflowRun} */ (run).head_branch !== /** @type {PullRequest} */ (pr).head.ref;
   const renovateBranch = branch.startsWith('renovate/');

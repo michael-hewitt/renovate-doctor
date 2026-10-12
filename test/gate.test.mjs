@@ -400,11 +400,19 @@ describe('decide, on a workflow_run', () => {
 });
 
 describe('decide, on a manual run', () => {
-  it.each([false, true])("refuses a run id from another branch than the PR's (dry run %s)", (dryRun) => {
+  // A manual run is a dispatch or any other event naming a PR; the branch check holds for every one of them.
+  it.each(
+    /** @type {[string, boolean][]} */ ([
+      ['workflow_dispatch', false],
+      ['workflow_dispatch', true],
+      ['issue_comment', false],
+      ['issue_comment', true],
+    ]),
+  )("refuses a run id from another branch than the PR's (%s, dry run %s)", (eventName, dryRun) => {
     const elsewhere = { ...run, id: 38000000001, head_branch: 'feature/new-tuner', head_sha: 'c0ffee'.padEnd(40, '0') };
     const github = fakeGithub({ [routes.pull]: openPull, [routes.run(elsewhere.id)]: elsewhere });
     const result = decide(
-      { eventName: 'workflow_dispatch', event: {}, repository, pr: 3814, runId: elsewhere.id, dryRun },
+      { eventName, event: {}, repository, pr: 3814, runId: elsewhere.id, dryRun },
       { github, sleep },
     );
     expect(result.launch).toBe(false);
