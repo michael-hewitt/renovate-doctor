@@ -29,6 +29,8 @@ The workflow prompt gives you:
   `$RUNNER_TEMP/renovate-doctor/logs/<run_id>.log`;
 - the **install**, **typecheck** and **test** commands (an empty typecheck means the project has none);
 - the number of **fix attempts** already on the branch (0 or 1: commits by anyone other than `renovate[bot]`);
+- whether you **already reran** this head SHA (`rerun_before`: a renovate-doctor comment with `outcome=rerun`
+  exists for it, and the rerun failed again);
 - whether this is a **dry run**;
 - the **outcome file** path (normally `$RUNNER_TEMP/renovate-doctor/outcome.json`);
 - the **notes file** path, if the project has one;
@@ -154,7 +156,10 @@ the writes below. Commit with the git identity the checkout has; if `git config 
    the rerun automation handles, so it will not rerun this one.
 3. Attempt 2 or later: compare with the earlier attempt (`gh run view <run_id> --attempt <n-1> --log-failed`).
    Failed the same way twice: that is (d), not another rerun. Failed differently: you may rerun once.
-4. Comment, then write the outcome file: `rerun`, classification `unrelated`. Set `mention: true` when the
+4. If `rerun_before` is true, or a renovate-doctor comment marked `outcome=rerun` exists for this head SHA,
+   never rerun again, whatever the attempt number: you already spent the rerun, and the same failure twice
+   is (d), or (b) if you now see a fix.
+5. Comment, then write the outcome file: `rerun`, classification `unrelated`. Set `mention: true` when the
    flake looks like a pattern a person should fix (the same test failing on several Renovate PRs, say).
 
 ### (b) `merged`
@@ -306,11 +311,12 @@ months when nothing is moving or when a condition test is also watching. Compute
 ## The comment
 
 One comment per run, on the Renovate PR, in exactly this form (the report step's `formatComment` uses the
-same one). The first line is the marker the gate looks for to know this head SHA was handled; it carries the
-head SHA you were given, even after you pushed a new one.
+same one). The first line is the marker the gate reads to know this head SHA was handled; it carries the
+head SHA you were given, even after you pushed a new one, and the outcome. A `rerun` marker does not count as
+handled: if the rerun fails again, the gate launches you once more, with `rerun_before` set.
 
 ```
-<!-- renovate-doctor sha=<head sha> -->
+<!-- renovate-doctor sha=<head sha> outcome=<merged | rerun | declined | escalated> -->
 **renovate-doctor**
 
 Outcome: <merged | rerun | declined | escalated>

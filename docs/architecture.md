@@ -127,7 +127,10 @@ Decision, in order; the first failing condition is the reason:
 2. **renovate**: the head branch starts with `renovate/` and the PR's author is `renovate[bot]`.
 3. **open**: exactly one open PR has that head branch, and its head SHA equals the run's head SHA (for a manual
    run with `run_id`, the run's head may be older than the PR's; this is reported and, outside dry run, skips).
-4. **not handled**: no PR comment carries the marker `<!-- renovate-doctor sha=<head sha> -->`.
+4. **not handled**: no PR comment carries a marker `<!-- renovate-doctor sha=<head sha> outcome=<outcome> -->`
+   whose outcome is anything but `rerun` (a marker without `outcome=` counts as handled). A `rerun` comment
+   does not settle the SHA: the rerun failed again, so the doctor looks a second time, and `rerun_before`
+   tells the agent its rerun already happened.
 5. **not the rerun automation's turn**: when `RERUN_WORKFLOW` is set and the run's `run_attempt` is 1 and the
    failed log matches the network signature, skip (the rerun automation acts first; this runs on attempt 2).
    The log fetch waits for GitHub to publish it, up to about four minutes, as a project's rerun workflow would.
@@ -141,8 +144,10 @@ failed run.
 
 Outputs (`$GITHUB_OUTPUT`): `launch` (`true`/`false`), `reason` (one line), `verdict` (dry run only),
 `outcome` (`escalated` or empty), `summary` (for an outcome the gate produced), `pr_number`, `pr_url`,
-`pr_title`, `head_sha`, `head_branch`, `failed_run_ids` (comma-separated), `attempts` (fix attempts already
-on the branch). The gate also writes each failed run's failed-job logs (last 600 lines per job) to
+`pr_title`, `head_sha`, `head_branch`, `failed_run_ids` (comma-separated: every failed run on the head SHA,
+the doctor's own workflow excluded, the triggering run first), `attempts` (fix attempts already on the
+branch), `rerun_before` (`true`/`false`: a renovate-doctor comment with `outcome=rerun` exists for the head
+SHA). The gate also writes each failed run's failed-job logs (last 600 lines per job) to
 `$RUNNER_TEMP/renovate-doctor/logs/<run_id>.log` for the agent.
 
 ## Outcome file (`$RUNNER_TEMP/renovate-doctor/outcome.json`)
@@ -212,8 +217,8 @@ names the package is ticked and the body is saved once. Idempotent; `--dry-run` 
 
 ## The agent on GitHub
 
-- Every comment the agent or the report posts starts with `<!-- renovate-doctor sha=<head sha> -->` on its own
-  line, then a bold `renovate-doctor` heading, the outcome, and two to six sentences.
+- Every comment the agent or the report posts starts with `<!-- renovate-doctor sha=<head sha> outcome=<outcome> -->`
+  on its own line, then a bold `renovate-doctor` heading, the outcome, and two to six sentences.
 - A fix commit's message: `fix(deps): <what> so that <PR title> passes (#<pr>)` - conventional, naming the PR.
   Never `--force`; never amend a Renovate commit.
 - `merged`: `gh pr merge <n> --auto --squash` after push and comment.

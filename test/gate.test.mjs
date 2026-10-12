@@ -109,6 +109,7 @@ describe('decide, on a workflow_run', () => {
       headBranch: 'renovate/vite-plugin-pwa-2.x',
       failedRunIds: [37993773276],
       attempts: 0,
+      rerunBefore: false,
     });
     expect(result.checks.map((check) => [check.condition, check.result])).toEqual([
       ['failure', 'pass'],
@@ -162,19 +163,64 @@ describe('decide, on a workflow_run', () => {
     expect(result.reason).toBe('open: the head moved: run 37993773276 ran on 457ec6c but PR #3814 is at eb80467');
   });
 
-  it('skips a head the doctor has already commented on', () => {
-    const marked = {
+  // A renovate-doctor comment in the real comment's shape, starting with `firstLine`.
+  function doctorComment(id, firstLine, outcome) {
+    return {
       ...comments[0],
-      id: 6091405765,
-      html_url: 'https://github.com/crescendosw/webapp/pull/3814#issuecomment-6091405765',
-      body: `${handledMarker(run.head_sha)}\n**renovate-doctor**\n\nDeclined: ...`,
+      id,
+      html_url: `https://github.com/crescendosw/webapp/pull/3814#issuecomment-${id}`,
+      body: `${firstLine}\n**renovate-doctor**\n\nOutcome: ${outcome}\n\nThe hold test fired; ...\n`,
     };
-    const github = fakeGithub({ [routes.comments]: [...comments, marked] });
+  }
+
+  it('skips a head the doctor has already settled', () => {
+    const declined = doctorComment(6091405765, handledMarker(run.head_sha, 'declined'), 'declined');
+    const github = fakeGithub({ [routes.comments]: [...comments, declined] });
     const result = decide(workflowRun(), { github, sleep });
+    expect(declined.body.startsWith(`<!-- renovate-doctor sha=${run.head_sha} outcome=declined -->\n`)).toBe(true);
     expect(result.launch).toBe(false);
     expect(result.reason).toBe(
       'not handled: PR #3814 already has a renovate-doctor comment for 457ec6c ' +
         '(https://github.com/crescendosw/webapp/pull/3814#issuecomment-6091405765)',
+    );
+    expect(result.rerunBefore).toBe(false);
+  });
+
+  it('reads a marker without an outcome as handled, to stay on the safe side', () => {
+    const old = doctorComment(6091405765, `<!-- renovate-doctor sha=${run.head_sha} -->`, 'escalated');
+    const result = decide(workflowRun(), { github: fakeGithub({ [routes.comments]: [old] }), sleep });
+    expect(result.launch).toBe(false);
+    expect(result.reason).toMatch(/^not handled: PR #3814 already has a renovate-doctor comment for 457ec6c /);
+  });
+
+  it('launches again when its own rerun failed again, and says the rerun already happened', () => {
+    const rerun = doctorComment(6091405766, handledMarker(run.head_sha, 'rerun'), 'rerun');
+    const github = fakeGithub({ [routes.comments]: [...comments, rerun] });
+    const result = decide(workflowRun({ run_attempt: 2 }), { github, sleep });
+    expect(result).toMatchObject({ launch: true, rerunBefore: true });
+    expect(result.checks.find((check) => check.condition === 'not handled')).toEqual({
+      condition: 'not handled',
+      result: 'pass',
+      detail:
+        'renovate-doctor reran 457ec6c on PR #3814 ' +
+        '(https://github.com/crescendosw/webapp/pull/3814#issuecomment-6091405766) and it failed again',
+    });
+    expect(toOutputs(result).rerun_before).toBe('true');
+  });
+
+  it('still skips a head settled after a rerun, and ignores markers for other heads', () => {
+    const github = fakeGithub({
+      [routes.comments]: [
+        doctorComment(1, handledMarker(mergedPull.head.sha, 'merged'), 'merged'),
+        doctorComment(2, handledMarker(run.head_sha, 'rerun'), 'rerun'),
+        doctorComment(3, handledMarker(run.head_sha, 'escalated'), 'escalated'),
+      ],
+    });
+    const result = decide(workflowRun({ run_attempt: 3 }), { github, sleep });
+    expect(result).toMatchObject({ launch: false, rerunBefore: true });
+    expect(result.reason).toBe(
+      'not handled: PR #3814 already has a renovate-doctor comment for 457ec6c ' +
+        '(https://github.com/crescendosw/webapp/pull/3814#issuecomment-3)',
     );
   });
 
@@ -377,7 +423,12 @@ describe('formatOutputs', () => {
       'head_branch',
       'failed_run_ids',
       'attempts',
+      'rerun_before',
     ]);
+  });
+
+  it('says no rerun happened when there is no rerun comment', () => {
+    expect(toOutputs(decide(workflowRun(), { github: fakeGithub(), sleep })).rerun_before).toBe('false');
   });
 });
 
