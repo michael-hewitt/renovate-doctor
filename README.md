@@ -214,7 +214,9 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
-      actions: write # to rerun failed jobs
+      actions: write # to rerun failed jobs, and to read runs: the Claude App token cannot
+      checks: read # the PR's checks, read with the job's token for the same reason
+      statuses: read
       id-token: write # claude-code-action exchanges it for the Claude GitHub App token
     uses: michael-hewitt/renovate-doctor/.github/workflows/renovate-doctor.yml@v0.1.0
     with:

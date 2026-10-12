@@ -47,6 +47,13 @@ Read GitHub with `gh` subcommands only (`gh pr view`, `gh pr checks`, `gh pr lis
 `gh run view`), never `gh api`: the one `gh api` call this procedure makes is the required-checks read in
 "Required checks". The harness blocks `gh api` in a dry run, so a read through it would fail there.
 
+The token `gh` uses by default is the Claude App's, which cannot read Actions runs or checks (every such
+read fails with 403 "Resource not accessible by integration"). Reads of runs and checks therefore use the
+job's own token: `GH_TOKEN="$RENOVATE_DOCTOR_ACTIONS_TOKEN" gh run list ...`, and the same prefix for
+`gh run view`, `gh pr checks` and `gh pr view --json statusCheckRollup`. Everything else (`gh pr view`,
+`gh pr list`, every write) uses the default token. In a dry run the job's token is withheld, so those reads
+fail: say which you skipped and go on with the logs the gate wrote.
+
 **By hand** (a local session, see the last section), get the same with:
 
 ```bash
@@ -93,10 +100,11 @@ a closed PR or an old head on purpose.
 
 - Read every log you were given, start to end of each failed job, not only the first error.
 - The gate may hand you only the run that triggered it. List every failed run on the head SHA,
-  `gh run list --commit <sha> --status failure --limit 100 --json databaseId,name,workflowName,attempt,url`,
-  and fetch any log you do not have with `gh run view <run_id> --log-failed`. Ignore runs of the
-  renovate-doctor workflow itself.
-- List the PR's other checks: `gh pr checks <n>`, or `gh pr view <n> --json statusCheckRollup`. Note any
+  `GH_TOKEN="$RENOVATE_DOCTOR_ACTIONS_TOKEN" gh run list --commit <sha> --status failure --limit 100 --json databaseId,name,workflowName,attempt,url`,
+  and fetch any log you do not have with `GH_TOKEN="$RENOVATE_DOCTOR_ACTIONS_TOKEN" gh run view <run_id> --log-failed`.
+  Ignore runs of the renovate-doctor workflow itself.
+- List the PR's other checks: `GH_TOKEN="$RENOVATE_DOCTOR_ACTIONS_TOKEN" gh pr checks <n>`, or the same
+  prefix on `gh pr view <n> --json statusCheckRollup`. Note any
   visual-snapshot check (Chromatic's `UI Tests`, Percy, or whatever the notes name) and its state.
 - Read earlier renovate-doctor comments from `gh pr view <n> --json comments` (they start with
   `<!-- renovate-doctor sha=`).
@@ -128,7 +136,7 @@ over (a). A fix push reruns every workflow anyway, so (b) plus (a) is (b).
 - A network stall, registry or download timeout, DNS failure, runner lost or out of disk.
 - A test the notes list as flaky, or a timing-dependent test that passes locally.
 - A failure that also happens on the default branch:
-  `gh run list --branch <default branch> --workflow "<workflow name>" --limit 5 --json conclusion,headSha,createdAt`.
+  `GH_TOKEN="$RENOVATE_DOCTOR_ACTIONS_TOKEN" gh run list --branch <default branch> --workflow "<workflow name>" --limit 5 --json conclusion,headSha,createdAt`.
 
 **(b) Fixable on the branch** - a small, mechanical change makes the update work, and you can say why.
 
@@ -163,7 +171,8 @@ the writes below. Commit with the git identity the checkout has; if `git config 
 
 ### (a) `rerun`
 
-1. For each failed run you classified (a), check its attempt: `gh run view <run_id> --json attempt --jq .attempt`.
+1. For each failed run you classified (a), check its attempt:
+   `GH_TOKEN="$RENOVATE_DOCTOR_ACTIONS_TOKEN" gh run view <run_id> --json attempt --jq .attempt`.
 2. Attempt 1: rerun it once, with the job's own token (the Claude App token may not rerun jobs; by hand,
    plain `gh run rerun`): `GH_TOKEN="$RENOVATE_DOCTOR_ACTIONS_TOKEN" gh run rerun <run_id> --failed`. This
    holds even when a rerun workflow is configured: on attempt 1 you were launched only because the log did
@@ -194,7 +203,8 @@ the writes below. Commit with the git identity the checkout has; if `git config 
    Never amend Renovate's commit; never squash into it.
 4. Push without force: `git push origin HEAD:refs/heads/<branch>` (the checkout may be a detached HEAD).
    Rejected because the branch moved: outcome `skipped` (step 2).
-5. Check the visual-snapshot checks (`gh pr checks <n>`), on the head you were given and on the new one so
+5. Check the visual-snapshot checks (`GH_TOKEN="$RENOVATE_DOCTOR_ACTIONS_TOKEN" gh pr checks <n>`), on the
+   head you were given and on the new one so
    far. One pending or failed with changes to review means the outcome is `escalated`, not `merged`: still
    enable auto-merge below (the person who accepts the snapshots then lets it merge), never accept or
    approve the snapshots yourself, and say in the comment that the snapshot review is the one thing left.
@@ -432,8 +442,9 @@ are refused (`git push`, `gh api`, `gh pr merge`, `gh pr create`, `gh pr comment
 `gh workflow run`, `gh issue`, `gh label`, `gh release`). The refusals match command text only, so whether
 nothing changes is up to you as much as to them. A permission refusal for one of them is expected, not an error:
 do not work around it (another tool, `curl`, a different spelling of the command); note what you would have
-done and carry on. The reads in this file (`gh pr view`, `gh pr checks`, `gh pr list`, `gh run list`,
-`gh run view`) still work.
+done and carry on. The reads through the default token (`gh pr view`, `gh pr list`) still work; the reads of
+runs and checks need the withheld token and fail, so classify from the logs the gate wrote and say which
+reads you skipped.
 
 - Read, reproduce and classify as usual. Skip the required-checks read (it is `gh api`) and say so.
 - (b): make the fix and run typecheck and tests; print `git diff`. Do not push.
