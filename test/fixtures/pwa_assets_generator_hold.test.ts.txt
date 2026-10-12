@@ -1,0 +1,51 @@
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+import { describe, expect, test } from 'vitest';
+
+// Trigger for lifting the Renovate hold on @vite-pwa/assets-generator (PR #3489).
+//
+// renovate.json disables major updates for @vite-pwa/assets-generator because vite-plugin-pwa, which
+// loads the generator at build time (pwaAssets in client/vite.config.ts), only accepts v1 as a peer;
+// Renovate's v2 PR (#3485) could not resolve the lock file. Nobody will remember to lift the hold, so
+// this test watches for the moment it becomes liftable: when a Renovate bump of vite-plugin-pwa brings
+// a release whose peer range is no longer v1-only, this test fails on that PR, blocks its automerge,
+// and says what to do. Once the hold rule is gone from renovate.json the test skips itself, so it can
+// be deleted together with the rule or left behind harmlessly.
+
+const generatorPackage = '@vite-pwa/assets-generator';
+const clientDir = resolve(import.meta.dirname, '../../..');
+
+type RenovateConfig = {
+  packageRules?: { matchPackageNames?: string[]; matchUpdateTypes?: string[]; enabled?: boolean }[];
+};
+const renovate = JSON.parse(readFileSync(resolve(clientDir, '../renovate.json'), 'utf8')) as RenovateConfig;
+const holdRule = renovate.packageRules?.find(
+  (rule) =>
+    rule.enabled === false &&
+    rule.matchPackageNames?.includes(generatorPackage) &&
+    rule.matchUpdateTypes?.includes('major'),
+);
+
+type PackageJson = { version: string; peerDependencies?: Record<string, string> };
+const pluginPackage = JSON.parse(
+  readFileSync(resolve(clientDir, 'node_modules/vite-plugin-pwa/package.json'), 'utf8'),
+) as PackageJson;
+
+describe('Renovate hold on @vite-pwa/assets-generator major updates', () => {
+  test.skipIf(holdRule === undefined)('vite-plugin-pwa still only accepts the generator at v1', () => {
+    const peerRange = pluginPackage.peerDependencies?.[generatorPackage];
+    expect(
+      peerRange,
+      `vite-plugin-pwa ${pluginPackage.version} no longer declares ${generatorPackage} as a peer dependency. ` +
+        'Check whether it still needs the generator; if the constraint is gone, remove the hold rule from renovate.json and delete this test.',
+    ).toBeDefined();
+    // The plugin has declared "^1.0.0" since its 1.0 release. Any other shape (a caret on 2, an "||"
+    // alternative, an open-ended ">=") means it may now accept v2 - time to lift the hold.
+    expect(
+      peerRange,
+      `vite-plugin-pwa ${pluginPackage.version} now declares ${generatorPackage} peer range "${peerRange}", which is no longer v1-only. ` +
+        `If it accepts v2, remove the rule disabling major updates for ${generatorPackage} from renovate.json and delete this test; ` +
+        'Renovate will then reopen the v2 update. If the new range is still v1-only, update the pattern in this test instead.',
+    ).toMatch(/^[\^~]?1\.\d+\.\d+$/);
+  });
+});
