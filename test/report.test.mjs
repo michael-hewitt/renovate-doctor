@@ -312,6 +312,27 @@ describe('run', () => {
     expect(printed()).toContain('Posted the comment on PR #3814: https://github.com/crescendosw/webapp/pull/3814#');
   });
 
+  it("emails the gate's own error but posts no comment, whose marker would silence the next triage", async () => {
+    const reason = 'gate error: Command failed: gh api gh: Bad credentials (HTTP 401)';
+    const summary =
+      `The renovate-doctor gate failed, so the agent did not run and nothing was done on the PR: ${reason} ` +
+      '(at evaluate (file:///home/runner/work/_temp/.renovate-doctor/scripts/gate.mjs:300:20)). ' +
+      'The run log has the full stack.';
+    const env = environment({
+      AGENT_OUTCOME: 'skipped',
+      GATE_OUTCOME: 'failed',
+      GATE_SUMMARY: summary,
+      GATE_REASON: reason,
+    });
+    const { deps, fetchImpl, ghApi, printed } = harness();
+    await expect(run(env, deps)).resolves.toBe(0);
+    const message = sentMessage(fetchImpl);
+    expect(message.subject).toBe(`[renovate-doctor] failed: ${pr.title}`);
+    expect(message.text.startsWith(`${summary}\n\nPR: ${pr.url}\nRun: ${runUrl}\n`)).toBe(true);
+    expect(ghApi).not.toHaveBeenCalled();
+    expect(printed()).toContain(`failed, produced by the gate (${reason}); the agent did not run`);
+  });
+
   it('prints the email and the would-be comment in a dry run, and sends and posts nothing', async () => {
     const env = environment({
       DRY_RUN: 'true',
@@ -416,7 +437,8 @@ describe('formatComment', () => {
   it('starts with the marker carrying the sha and the outcome, which the gate reads back', () => {
     const comment = formatComment(pr.headSha, 'escalated', exhaustedSummary);
     expect(comment.split('\n')[0]).toBe(handledMarker(pr.headSha, 'escalated'));
-    const { handled, rerun } = readMarkers([{ body: comment }], pr.headSha);
+    const posted = { body: comment, user: { login: 'github-actions[bot]' } };
+    const { handled, rerun } = readMarkers([posted], pr.headSha);
     expect(handled).toBeDefined();
     expect(rerun).toBeUndefined();
   });

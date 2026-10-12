@@ -13,7 +13,11 @@
       "conclusion": "failure",
       "workflow_id": 36829632,
       "html_url": "https://github.com/crescendosw/webapp/actions/runs/37993773276",
-      "run_attempt": 1
+      "run_attempt": 1,
+      "head_repository": {
+        "id": 323700510,
+        "full_name": "crescendosw/webapp"
+      }
     }
   ]
 }

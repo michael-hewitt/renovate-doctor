@@ -144,19 +144,27 @@ any; the gate's reason (and verdict, in a dry run); and that reruns use `RENOVAT
 Environment: `GITHUB_EVENT_NAME`, `GITHUB_EVENT_PATH`, `GITHUB_REPOSITORY`, `GH_TOKEN`, `RUNNER_TEMP`,
 `INPUT_PR`, `INPUT_RUN_ID`, `INPUT_DRY_RUN` (`true`/`false`), `RERUN_WORKFLOW`, `GITHUB_OUTPUT`,
 `GITHUB_WORKFLOW_REF` (set by Actions; it names the caller's own renovate-doctor workflow file, whose failed
-runs are left out of `failed_run_ids`).
+runs are left out of `failed_run_ids`), `RENOVATE_DOCTOR_COMMENT_AUTHORS` (comma-separated logins whose
+markers count for condition 4; default `claude[bot],github-actions[bot]`, the agent's App token and the
+report's job token).
 
 Decision, in order; the first failing condition is the reason:
 
 1. **failure**: the triggering run concluded `failure` (`workflow_run`); for a manual run, the chosen run (or
    at least one run on the head) concluded `failure`.
-2. **renovate**: the head branch starts with `renovate/` and the PR's author is `renovate[bot]`.
+2. **renovate**: the run comes from this repository (`head_repository.full_name` equals `GITHUB_REPOSITORY`;
+   otherwise `renovate: run <id> came from fork <name>`, since a fork can push Renovate's exact commit to a
+   same-named branch), the head branch starts with `renovate/`, and the PR's author is `renovate[bot]`.
+   Fork runs on the head SHA are also left out of `failed_run_ids`.
 3. **open**: exactly one open PR has that head branch, and its head SHA equals the run's head SHA (for a manual
    run with `run_id`, the run's head may be older than the PR's; this is reported and, outside dry run, skips).
 4. **not handled**: no PR comment carries a marker `<!-- renovate-doctor sha=<head sha> outcome=<outcome> -->`
    whose outcome is anything but `rerun` (a marker without `outcome=` counts as handled). A `rerun` comment
    does not settle the SHA: the rerun failed again, so the doctor looks a second time, and `rerun_before`
-   tells the agent its rerun already happened.
+   tells the agent its rerun already happened. Only comments by a login in `RENOVATE_DOCTOR_COMMENT_AUTHORS`
+   count: a marker is invisible when rendered and anyone may comment, so a marker from anyone else is
+   ignored, with a `::warning::` line naming its author (so a wrong login in the list shows on the run
+   rather than as a silent second triage).
 5. **not the rerun automation's turn**: when `RERUN_WORKFLOW` is set and the run's `run_attempt` is 1 and the
    failed log matches the network signature, skip (the rerun automation acts first; this runs on attempt 2).
    The log fetch waits for GitHub to publish it, up to about four minutes, as a project's rerun workflow would.
@@ -164,14 +172,19 @@ Decision, in order; the first failing condition is the reason:
    means `launch=false`, `outcome=escalated`, `summary=fix attempts exhausted ...` - the report step emails
    and comments on the gate's behalf.
 
+A **gate error** (any exception) never launches: `launch=false`, `reason=gate error: <message>`,
+`outcome=failed`, and `summary` carrying the reason and the first stack frame, so the report step emails it
+rather than leaving a real failure untriaged behind a green run. The stack goes to stderr; the script still
+exits 0.
+
 In **dry run** every condition is evaluated and printed, `verdict` carries the would-be decision, and `launch`
 is `true` whenever the PR and run could be resolved at all, so a rehearsal can target a closed PR or an old
 failed run.
 
 Outputs (`$GITHUB_OUTPUT`): `launch` (`true`/`false`), `reason` (one line), `verdict` (dry run only),
-`outcome` (`escalated` or empty), `summary` (for an outcome the gate produced), `pr_number`, `pr_url`,
+`outcome` (`escalated`, `failed` for a gate error, or empty), `summary` (for an outcome the gate produced), `pr_number`, `pr_url`,
 `pr_title`, `head_sha`, `head_branch`, `failed_run_ids` (comma-separated: every failed run on the head SHA,
-the doctor's own workflow excluded, the triggering run first), `attempts` (fix attempts already on the
+the doctor's own workflow and fork runs excluded, the triggering run first), `attempts` (fix attempts already on the
 branch), `rerun_before` (`true`/`false`: a renovate-doctor comment with `outcome=rerun` exists for the head
 SHA). The gate also writes each failed run's failed-job logs (last 600 lines per job) to
 `$RUNNER_TEMP/renovate-doctor/logs/<run_id>.log` for the agent.
@@ -207,8 +220,9 @@ Environment: `REPORT_MODE` (`triage`/`lift`), `OUTCOME_FILE`, `AGENT_OUTCOME` (t
 Rules: no email for `merged` or `rerun` without `mention`, and never for `skipped`; otherwise one plain-text
 email. No outcome file and an agent step that failed or was cancelled → outcome `failed` ("the run failed",
 with the run link); no outcome file and a successful agent step → `escalated` ("the agent wrote no
-outcome"). When the gate produced the outcome (attempts exhausted) the report also posts the PR comment,
-with the sha marker, since no agent ran. Subject: `[renovate-doctor] <outcome>: <PR title>`; body: the
+outcome"). When the gate produced the outcome no agent ran: for `escalated` (attempts exhausted) the report
+also posts the PR comment, with the sha marker; for `failed` (a gate error) it only emails, since that says
+nothing about the PR and its marker would count as handled. Subject: `[renovate-doctor] <outcome>: <PR title>`; body: the
 summary, then `PR:`, `Run:` and, when present, `Config PR:` links, then one line naming the repository. Dry
 run prints `Subject:` and the body to stdout and sends nothing. A refused send fails the step (the email is
 the product of a non-merged run).
