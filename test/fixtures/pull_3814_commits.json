@@ -1,0 +1,33 @@
+[
+  {
+    "sha": "eb80467863d45cc6911af0a24542254f5c48bffe",
+    "commit": {
+      "author": {
+        "name": "renovate[bot]",
+        "email": "29139614+renovate[bot]@users.noreply.github.com",
+        "date": "2026-10-10T00:17:42Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "date": "2026-10-10T00:17:42Z"
+      },
+      "message": "chore(deps): update dependency vite-plugin-pwa to v2"
+    },
+    "html_url": "https://github.com/crescendosw/webapp/commit/eb80467863d45cc6911af0a24542254f5c48bffe",
+    "author": {
+      "login": "renovate[bot]",
+      "id": 29139614,
+      "type": "Bot"
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "type": "User"
+    },
+    "parents": [
+      {
+        "sha": "70dcb52984f4e22048e3539274f2da8baf5b647e"
+      }
+    ]
+  }
+]

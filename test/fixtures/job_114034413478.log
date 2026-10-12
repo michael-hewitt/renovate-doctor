@@ -1,0 +1,47 @@
+﻿2026-10-09T21:36:44.7751153Z Current runner version: '2.337.0'
+2026-10-09T21:36:44.7764593Z Runner name: 'automation-server-2'
+2026-10-09T21:36:44.7766031Z Runner group name: 'Default'
+2026-10-09T21:46:20.6686999Z      ✓ heap + external after importing the server module graph stays under 75 MiB  4310ms
+2026-10-09T21:46:20.6848574Z 
+2026-10-09T21:46:20.6850950Z ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+2026-10-09T21:46:20.6851847Z 
+2026-10-09T21:46:20.6858451Z  FAIL   client  src/util/test/pwa_assets_generator_hold.test.ts > Renovate hold on @vite-pwa/assets-generator major updates > vite-plugin-pwa still only accepts the generator at v1
+2026-10-09T21:46:20.6873478Z AssertionError: vite-plugin-pwa 2.0.0 now declares @vite-pwa/assets-generator peer range "^1.0.0 || ^2.0.0", which is no longer v1-only. If it accepts v2, remove the rule disabling major updates for @vite-pwa/assets-generator from renovate.json and delete this test; Renovate will then reopen the v2 update. If the new range is still v1-only, update the pattern in this test instead.: expected '^1.0.0 || ^2.0.0' to match /^[\^~]?1\.\d+\.\d+$/
+2026-10-09T21:46:20.6886343Z 
+2026-10-09T21:46:20.6886952Z - Expected:
+2026-10-09T21:46:20.6887502Z /^[\^~]?1\.\d+\.\d+$/
+2026-10-09T21:46:20.6887778Z 
+2026-10-09T21:46:20.6888122Z + Received:
+2026-10-09T21:46:20.6888604Z "^1.0.0 || ^2.0.0"
+2026-10-09T21:46:20.6888870Z 
+2026-10-09T21:46:20.6889826Z  ❯ src/util/test/pwa_assets_generator_hold.test.ts:49:7
+2026-10-09T21:46:20.6912563Z      47|         `If it accepts v2, remove the rule disabling major updates for…
+2026-10-09T21:46:20.6919872Z      48|         'Renovate will then reopen the v2 update. If the new range is …
+2026-10-09T21:46:20.6921053Z      49|     ).toMatch(/^[\^~]?1\.\d+\.\d+$/);
+2026-10-09T21:46:20.6922147Z        |       ^
+2026-10-09T21:46:20.6922776Z      50|   });
+2026-10-09T21:46:20.6923362Z      51| });
+2026-10-09T21:46:20.6923659Z 
+2026-10-09T21:46:20.6927694Z ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+2026-10-09T21:46:20.6928079Z 
+2026-10-09T21:46:20.6943297Z 
+2026-10-09T21:46:20.6956901Z  Test Files  1 failed | 218 passed (219)
+2026-10-09T21:46:20.6998417Z       Tests  1 failed | 4293 passed (4294)
+2026-10-09T21:46:20.7000058Z    Start at  14:41:28
+2026-10-09T21:46:20.7004796Z    Duration  291.72s (transform 19.01s, setup 0ms, import 70.22s, tests 499.86s, environment 224.72s)
+2026-10-09T21:46:20.7006836Z 
+2026-10-09T21:46:20.7083618Z 
+2026-10-09T21:46:20.7126632Z ##[error]AssertionError: vite-plugin-pwa 2.0.0 now declares @vite-pwa/assets-generator peer range "^1.0.0 || ^2.0.0", which is no longer v1-only. If it accepts v2, remove the rule disabling major updates for @vite-pwa/assets-generator from renovate.json and delete this test; Renovate will then reopen the v2 update. If the new range is still v1-only, update the pattern in this test instead.: expected '^1.0.0 || ^2.0.0' to match /^[\^~]?1\.\d+\.\d+$/
+
+- Expected:
+/^[\^~]?1\.\d+\.\d+$/
+
++ Received:
+"^1.0.0 || ^2.0.0"
+
+ ❯ src/util/test/pwa_assets_generator_hold.test.ts:49:7
+
+
+2026-10-09T21:46:20.8752537Z [ELIFECYCLE] Test failed. See above for more details.
+2026-10-09T21:46:20.8780674Z ##[error]Process completed with exit code 1.
+2026-10-09T21:46:20.8957610Z Post job cleanup.

@@ -1,0 +1,6 @@
+2026-10-04T00:50:30.1498973Z Switching pnpm from v11.19.0 to v12.8.2...
+2026-10-04T00:50:33.3314106Z [WARN] GET https://registry.npmjs.org/pnpm error (ETIMEDOUT). Will retry in 10 seconds. 2 retries left.
+2026-10-04T00:52:26.1077374Z [WARN] GET https://registry.npmjs.org/pnpm/-/pnpm-12.8.2.tgz error (23). Will retry in 10 seconds. 2 retries left.
+2026-10-04T00:54:53.0673429Z [ERR_PNPM_BROKEN_PNPM_INSTALL] The pnpm v12.8.2 that was just installed cannot run: it exited with code 1: Downloading the pnpm 12.8.2 binary for linux-x64...
+2026-10-04T00:54:53.0693598Z Could not download the pnpm 12.8.2 binary: Could not reach https://registry.npmjs.org/@pnpm/exe.linux-x64/12.8.2: fetch failed
+2026-10-04T00:54:53.1213955Z ##[error]Something went wrong, self-installer exits with code 1
