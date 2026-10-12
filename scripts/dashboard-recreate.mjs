@@ -8,8 +8,9 @@
 // Renovate PR the condition test fired on - and both show in the Renovate config's git history, so that
 // history is the source: a package with a disabled rule (`"enabled": false`) in the config before a
 // commit on the default branch in the last 60 days and none after it was lifted by that commit, unless it
-// is held again today. A lifted package is left alone when Renovate has opened any PR naming it since the
-// lifting commit, whatever became of that PR: Renovate has acted on the lift, and if a person then closed
+// is held again today. A lifted package is left alone when a PR by Renovate naming it was opened or
+// closed since the lifting commit, or is open now (Renovate reopens an autoclosed PR, which keeps its old
+// creation date), whatever became of that PR: Renovate has acted on the lift, and if a person then closed
 // the PR, that was their decision to keep, not one to undo next month. Otherwise this script ticks every
 // unchecked "recreate" line naming the package (`<!-- recreate-branch=... -->`, Renovate's form for an
 // update blocked by a closed PR) on the Dependency Dashboard, and Renovate acts on the ticks on its next
@@ -145,19 +146,30 @@ export function findLiftedPackages({ days, configPath, cwd }, { exec = defaultEx
 }
 
 /**
- * The PRs `renovate[bot]` created at or after `since` (an ISO date), open, closed or merged. PRs are read
- * newest first, page by page, until a page reaches back past `since`.
+ * The PRs by `renovate[bot]` updated at or after `since` (an ISO date), open, closed or merged. PRs are read
+ * most recently updated first, page by page, until a page reaches back past `since`: anything Renovate did
+ * to a PR since then (opening, closing, reopening) updated it.
  */
 export function renovatePullsSince(github, repository, since) {
   const cutoff = Date.parse(since);
   const pulls = [];
   for (let page = 1; ; page += 1) {
     const batch = github.ghApi(
-      `repos/${repository}/pulls?state=all&sort=created&direction=desc&per_page=100&page=${page}`,
+      `repos/${repository}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=${page}`,
     );
-    pulls.push(...batch.filter((pull) => pull.user?.login === renovateBot && Date.parse(pull.created_at) >= cutoff));
-    if (batch.length < 100 || Date.parse(batch.at(-1).created_at) < cutoff) return pulls;
+    pulls.push(...batch.filter((pull) => pull.user?.login === renovateBot && Date.parse(pull.updated_at) >= cutoff));
+    if (batch.length < 100 || Date.parse(batch.at(-1).updated_at) < cutoff) return pulls;
   }
+}
+
+/**
+ * Whether Renovate has acted on a lift made at `since` with this PR: it opened the PR since, closed it
+ * since, or has it open now. Renovate reopens an autoclosed PR rather than opening a new one, and a
+ * reopened PR keeps its old `created_at`, so the creation date alone would miss it.
+ */
+function actedOnSince(pull, since) {
+  const at = (date) => (date ? Date.parse(date) : -Infinity);
+  return at(pull.created_at) >= since || at(pull.closed_at) >= since || pull.state === 'open';
 }
 
 /**
@@ -210,8 +222,7 @@ export function recreate(
     const by = `lifted in ${commit.slice(0, 7)} on ${date.slice(0, 10)}`;
     const reopened = renovatePulls.find(
       (pull) =>
-        Date.parse(pull.created_at) >= Date.parse(date) &&
-        (namesPackage(pull.title, name) || namesPackage(pull.head.ref, name)),
+        actedOnSince(pull, Date.parse(date)) && (namesPackage(pull.title, name) || namesPackage(pull.head.ref, name)),
     );
     if (reopened) {
       result.reopened.push(name);

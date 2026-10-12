@@ -3,13 +3,15 @@
 // The lift job's main step, run monthly from the caller's default-branch checkout. A dated hold is a
 // disabled package rule whose description carries `remove after YYYY-MM-DD: <why>`; when that date is
 // today or earlier the hold has expired. This script removes every expired hold from the config, deletes
-// the condition tests guarding them (tracked files that name the package and read the Renovate config),
+// the condition tests guarding them (test files carrying the line `renovate-doctor hold: <package>`),
 // commits that on `renovate-doctor/lift-<today>`, pushes, opens a PR carrying `<!-- renovate-doctor lift -->`
 // and enables squash auto-merge, so a dated retry never waits on a person. Auto-merge is enabled only when
 // the default branch requires status checks (branch protection or a ruleset): without them it would merge
 // before CI has run, so the PR is left for a person and the summary says so. When the branch already has an
 // open PR (a rerun of the same day's job), that PR is reused rather than opened again; when another lift
-// PR is still open, nothing is lifted (`blocked`), because a second PR would lift the same holds again. A
+// PR is still open, nothing is lifted (`blocked`), because a second PR would lift the same holds again.
+// Only PRs from this repository's own branches count: the branch name is predictable, and a fork's PR
+// named like it must never be reused, let alone set to auto-merge. A
 // dry run makes the same edits in the working tree, prints the diff and the PR body, and then puts the
 // files back; it touches nothing on GitHub.
 //
@@ -25,11 +27,12 @@
 // would wait forever.
 //
 // Outputs (`$GITHUB_OUTPUT`): `opened` (`true`/`false`), `blocked` (`true` when an earlier lift PR is
-// still open; `pr_url` is then that PR), `pr_url`, `packages` (comma-separated), `summary` (one line, for
-// the email subject). The same outputs, with the script's `exit_code`, also go to
-// `$RUNNER_TEMP/renovate-doctor/lift.json` when RUNNER_TEMP is set: in the workflow the script runs inside
-// the claude-code-action step, whose `$GITHUB_OUTPUT` belongs to the action's own inner step, so the next
-// step reads the file instead. The commit is authored by the git identity the checkout already has;
+// still open; `pr_url` is then that PR), `pr_url`, `packages` (comma-separated), `removed` (the number of
+// holds, that is rules, removed or, in a dry run, to be removed; a rule matched by prefix names no package,
+// so `packages` alone can be empty when something was lifted), `summary` (one line, for the email
+// subject). The same outputs, with the script's `exit_code`, also go to `$RUNNER_TEMP/renovate-doctor/lift.json`
+// when RUNNER_TEMP is set: in the workflow the script runs inside the claude-code-action step, whose
+// `$GITHUB_OUTPUT` belongs to the action's own inner step, so the next step reads the file instead. The commit is authored by the git identity the checkout already has;
 // when none is set it is `renovate-doctor[bot] <noreply@github.com>`. On GitHub, the token that pushes and
 // opens the PR decides who the PR is from. The script exits 1 when the lift failed, after writing outputs
 // whose `summary` says why.
@@ -227,11 +230,17 @@ export function formatPrBody({ removed, malformed, conditionTests, configPath, a
   return lines.join('\n');
 }
 
+/** Whether a PR's head branch lives in this repository rather than in a fork. */
+function isOwnBranch(pr, repository) {
+  return pr.head?.repo?.full_name === repository;
+}
+
 function findOpenPr(github, repository, branch) {
   const owner = repository.split('/')[0];
   const head = encodeURIComponent(`${owner}:${branch}`);
-  const [pr] = github.ghApi(`repos/${repository}/pulls?head=${head}&state=open&per_page=100`);
-  return pr;
+  return github
+    .ghApi(`repos/${repository}/pulls?head=${head}&state=open&per_page=100`)
+    .find((pr) => isOwnBranch(pr, repository));
 }
 
 // A push the remote rejected (a non-fast-forward, a protected branch) gets the same answer every time, so
@@ -334,8 +343,12 @@ export function lift(
     const base = defaultBranch || github.ghApi(`repos/${repository}`).default_branch;
     defaultBranch = base;
     const openPrs = github.ghApi(`repos/${repository}/pulls?state=open&per_page=100`, { paginate: true });
-    const sameBranch = openPrs.find((pr) => pr.head?.ref === branch);
-    const earlier = openPrs.find((pr) => pr.head?.ref !== branch && pr.body?.includes(liftMarker));
+    const ownPrs = openPrs.filter((pr) => isOwnBranch(pr, repository));
+    const sameBranch = ownPrs.find((pr) => pr.head.ref === branch);
+    const earlier = ownPrs.find(
+      (pr) =>
+        pr.head.ref !== branch && pr.head.ref.startsWith('renovate-doctor/lift-') && pr.body?.includes(liftMarker),
+    );
     if (!sameBranch && earlier) {
       // An earlier lift PR that has not merged still removes the holds it lifted; a second PR built from
       // the default branch would lift them again and conflict with it. A person has to look at the first.
@@ -470,12 +483,13 @@ export function lift(
 }
 
 /** The result as the `$GITHUB_OUTPUT` keys the lift contract names. */
-export function toOutputs({ opened, blocked = false, prUrl, packages, summary }) {
+export function toOutputs({ opened, blocked = false, prUrl, packages, removed = [], summary }) {
   return {
     opened: opened ? 'true' : 'false',
     blocked: blocked ? 'true' : 'false',
     pr_url: prUrl,
     packages: packages.join(','),
+    removed: String(removed.length),
     summary: oneLine(summary),
   };
 }

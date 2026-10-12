@@ -351,8 +351,10 @@ Renovate PR, triage runs, and the agent removes the hold. Read the registry only
 use the network. Requirements:
 
 - Its path looks like a test (a `test`, `tests`, `__tests__` or `spec` directory, or `.test.`/`.spec.` in the
-  file name) and its text names the held package and `renovate.json` or `packageRules`, so the lift mode
-  deletes it together with the rule.
+  file name) and it MUST carry a comment line `renovate-doctor hold: <package>`, exactly that, with the held
+  package's name as it appears in the rule and nothing after it on the line (one such line per held package
+  the test guards), for example `// renovate-doctor hold: @vite-pwa/assets-generator`. The lift mode finds
+  the test by that line alone and deletes it together with the rule; a test without it is left behind.
 - It reads the hold rule from the Renovate config and skips itself when the rule is gone, so it is harmless
   if left behind.
 - A header comment says why the hold exists and links the Renovate PR and the hold PR.
