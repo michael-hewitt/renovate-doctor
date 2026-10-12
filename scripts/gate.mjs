@@ -14,8 +14,9 @@
 // anyone may comment, so a stranger's marker is ignored (with a warning on the run, so a wrong login in
 // the list shows up there rather than as a silent second triage).
 //
-// Environment: GITHUB_EVENT_NAME (`workflow_run`; `workflow_dispatch` or any event with INPUT_PR set is a
-// manual run, such as a `push` rehearsal before the caller is merged), GITHUB_EVENT_PATH,
+// Environment: GITHUB_EVENT_NAME (`workflow_run`; `workflow_dispatch`, or any other event with INPUT_PR
+// set, is a manual run - though claude-code-action itself refuses `push`, so a rehearsal is dispatched once
+// the caller is on the default branch), GITHUB_EVENT_PATH,
 // GITHUB_REPOSITORY, GH_TOKEN (read by `gh`), RUNNER_TEMP, INPUT_PR, INPUT_RUN_ID, INPUT_DRY_RUN
 // (`true`/`false`), RERUN_WORKFLOW, GITHUB_OUTPUT, GITHUB_WORKFLOW_REF (set by Actions; it names the
 // caller's own workflow file, whose failed runs are not CI failures to triage), and
@@ -302,8 +303,8 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
     result.headBranch = run.head_branch;
     result.failedRunIds = [run.id];
   } else if (eventName === 'workflow_dispatch' || input.pr) {
-    // A manual run. `workflow_dispatch` only works once the caller is on the default branch, so a
-    // rehearsal before that runs on `push` with the PR hard-coded; any event naming a PR is taken as one.
+    // A manual run: `workflow_dispatch`, or any other event that names a PR. The agent's action supports
+    // only some events (not `push`), so in practice this is a dispatch.
     if (!input.pr) throw new Error('a manual run needs the pr input (the PR to triage)');
     pr = github.ghApi(`repos/${repository}/pulls/${input.pr}`);
     setPr(pr);

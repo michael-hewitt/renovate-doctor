@@ -426,9 +426,11 @@ malformed one as a failed run.
 ## Dry run
 
 Do everything that does not touch GitHub, exactly as in a real run, and stop at each write. The harness
-enforces this: in a dry run `RENOVATE_DOCTOR_ACTIONS_TOKEN` is withheld and these commands are refused
-(`git push`, `gh api`, `gh pr merge`, `gh pr create`, `gh pr comment`, `gh pr edit`, `gh pr close`,
-`gh pr review`, `gh run rerun`, `gh issue`). A permission refusal for one of them is expected, not an error:
+backs this up as far as it can: in a dry run `RENOVATE_DOCTOR_ACTIONS_TOKEN` is withheld and these commands
+are refused (`git push`, `gh api`, `gh pr merge`, `gh pr create`, `gh pr comment`, `gh pr edit`,
+`gh pr close`, `gh pr review`, `gh pr ready`, `gh pr reopen`, `gh run rerun`, `gh run cancel`,
+`gh workflow run`, `gh issue`, `gh label`, `gh release`). The refusals match command text only, so whether
+nothing changes is up to you as much as to them. A permission refusal for one of them is expected, not an error:
 do not work around it (another tool, `curl`, a different spelling of the command); note what you would have
 done and carry on. The reads in this file (`gh pr view`, `gh pr checks`, `gh pr list`, `gh run list`,
 `gh run view`) still work.

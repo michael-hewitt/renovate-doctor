@@ -44,7 +44,8 @@ Each triage run on which the agent was launched ends in exactly one outcome:
 | `skipped`   | The PR closed, or Renovate pushed a new head, before the agent acted.                                                                                    | Nothing; the run on the new head decides.                                                                                                                                  | never                                                  | none       |
 
 More results come from the workflow rather than the agent. A run that broke (the agent step failed, or wrote
-no usable outcome) is reported as `failed` or `escalated`, with an email; so is a gate that crashed (`failed`).
+no usable outcome) is reported as `failed` or `escalated`, with an email; so is a gate that crashed, and a
+triage job that broke before the gate ran (a typo in the caller's inputs, say), both as `failed`.
 When the branch already carries two fix attempts, the gate escalates without launching the agent, and the
 report job posts the comment itself.
 
@@ -163,7 +164,9 @@ run stops:
 
 ### A complete caller
 
-Save as `.github/workflows/renovate-doctor.yml` in your repository:
+Save as `.github/workflows/renovate-doctor.yml` in your repository. This is the final state; adopt it in two
+steps, merging it first without the `workflow_run` block and rehearsing with a dry run before adding it (see
+[Dry runs](#dry-runs)).
 
 ```yaml
 name: renovate-doctor
@@ -239,7 +242,8 @@ you pinned, so what runs is what you chose. Renovate can update the pin like any
 
 If your tests need a service, start it in `service_setup`, because a reusable workflow cannot take a
 `services:` block from its caller. `service_setup` runs on your repository at the commit the run started from
-(your default branch), before the PR head is checked out, because an older Renovate branch may predate it.
+(your default branch), before the PR head is checked out, because an older Renovate branch may predate it,
+and before your project's Node and package manager are set up: plain Bash and Docker only.
 `service_teardown` runs after the agent, on the PR-head checkout, so it must be self-contained: inline
 commands, nothing read from the repository. For example, Postgres on a free port:
 
@@ -256,27 +260,27 @@ service_teardown: docker rm -f "$RENOVATE_DOCTOR_PG"
 
 ### Inputs
 
-| input               | type    | default            | meaning                                                                                                                                                          |
-| ------------------- | ------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mode`              | string  | `triage`           | `triage` or `lift`. Compute it from the event, as the caller above does.                                                                                         |
-| `runs_on`           | string  | `"ubuntu-latest"`  | JSON for `runs-on`: a quoted string or an array such as `'["self-hosted", "linux"]'`.                                                                            |
-| `package_manager`   | string  | `npm`              | `npm` or `pnpm`. With `pnpm`, the version named by `packageManager` in `package.json` is installed.                                                              |
-| `node_version_file` | string  | `.nvmrc`           | Your project's Node version file, read at the PR head, so a PR that moves Node is reproduced on the new version.                                                 |
-| `install`           | string  | by package manager | `npm ci` or `pnpm install --frozen-lockfile`. The workflow runs it before the agent; a failed install is handed to the agent to triage, not treated as an error. |
-| `typecheck`         | string  | `''`               | Empty means the project has no typecheck.                                                                                                                        |
-| `test`              | string  | by package manager | `npm test` or `pnpm test`.                                                                                                                                       |
-| `service_setup`     | string  | `''`               | Bash run before the install, on your commit (not the PR head); may write to `$GITHUB_ENV` (a database port, say).                                                |
-| `service_teardown`  | string  | `''`               | Bash run after the agent, whatever happened, on the PR-head checkout: keep it self-contained.                                                                    |
-| `email_to`          | string  | required           | Where the report goes.                                                                                                                                           |
-| `email_from`        | string  | required           | The sender address; Mandrill must accept it for your key (a verified sending domain).                                                                            |
-| `email_from_name`   | string  | `renovate-doctor`  | The sender's display name.                                                                                                                                       |
-| `notes_file`        | string  | `''`               | Repository-relative path of your project-notes file, read from your commit (not the PR head). A path that does not exist gives a warning and no notes.           |
-| `rerun_workflow`    | string  | `''`               | Name of your own rerun automation, if you have one. A first-attempt network failure is then left to it, and the doctor looks only if the rerun fails too.        |
-| `renovate_config`   | string  | `renovate.json`    | Repository-relative path of the Renovate config. The lift mode edits it and reads its history; it must be JSON.                                                  |
-| `pr`                | number  | `0`                | Manual runs: the PR to triage.                                                                                                                                   |
-| `run_id`            | number  | `0`                | Manual runs: the failed run to triage; `0` means the failed runs on the PR's head.                                                                               |
-| `dry_run`           | boolean | `false`            | Push, comment, merge, rerun and open nothing (the harness refuses those commands); print the email instead of sending it.                                        |
-| `timeout_minutes`   | number  | `60`               | The job's timeout.                                                                                                                                               |
+| input               | type    | default            | meaning                                                                                                                                                                       |
+| ------------------- | ------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`              | string  | `triage`           | `triage` or `lift`. Compute it from the event, as the caller above does.                                                                                                      |
+| `runs_on`           | string  | `"ubuntu-latest"`  | JSON for `runs-on`: a quoted string or an array such as `'["self-hosted", "linux"]'`.                                                                                         |
+| `package_manager`   | string  | `npm`              | `npm` or `pnpm`. With `pnpm`, the version named by `packageManager` in `package.json` is installed.                                                                           |
+| `node_version_file` | string  | `.nvmrc`           | Your project's Node version file, read at the PR head, so a PR that moves Node is reproduced on the new version.                                                              |
+| `install`           | string  | by package manager | `npm ci` or `pnpm install --frozen-lockfile`. The workflow runs it before the agent; a failed install is handed to the agent to triage, not treated as an error.              |
+| `typecheck`         | string  | `''`               | Empty means the project has no typecheck.                                                                                                                                     |
+| `test`              | string  | by package manager | `npm test` or `pnpm test`.                                                                                                                                                    |
+| `service_setup`     | string  | `''`               | Plain Bash and Docker only (your toolchain is not installed yet), run before the install on your commit (not the PR head); may write to `$GITHUB_ENV` (a database port, say). |
+| `service_teardown`  | string  | `''`               | Bash run after the agent, whatever happened, on the PR-head checkout: keep it self-contained.                                                                                 |
+| `email_to`          | string  | required           | Where the report goes.                                                                                                                                                        |
+| `email_from`        | string  | required           | The sender address; Mandrill must accept it for your key (a verified sending domain).                                                                                         |
+| `email_from_name`   | string  | `renovate-doctor`  | The sender's display name.                                                                                                                                                    |
+| `notes_file`        | string  | `''`               | Repository-relative path of your project-notes file, read from your commit (not the PR head). A path that does not exist gives a warning and no notes.                        |
+| `rerun_workflow`    | string  | `''`               | Name of your own rerun automation, if you have one. A first-attempt network failure is then left to it, and the doctor looks only if the rerun fails too.                     |
+| `renovate_config`   | string  | `renovate.json`    | Repository-relative path of the Renovate config. The lift mode edits it and reads its history; it must be JSON.                                                               |
+| `pr`                | number  | `0`                | Manual runs: the PR to triage.                                                                                                                                                |
+| `run_id`            | number  | `0`                | Manual runs: the failed run to triage; `0` means the failed runs on the PR's head.                                                                                            |
+| `dry_run`           | boolean | `false`            | Push, comment, merge, rerun and open nothing, as far as [Dry runs](#dry-runs) says it is enforced; print the email instead of sending it.                                     |
+| `timeout_minutes`   | number  | `60`               | The job's timeout.                                                                                                                                                            |
 
 ### Secrets
 
@@ -334,56 +338,43 @@ A short example:
 
 ### Dry runs
 
-A dry run rehearses a real triage without changing anything: the agent reads, reproduces, classifies and makes
-its fix locally, then pushes, comments, merges, reruns and opens nothing, and the report job prints the email
-instead of sending it. This is enforced by the harness, not only asked of the agent: in a dry run the agent's
-`git push`, `gh api`, `gh pr merge`/`create`/`comment`/`edit`/`close`/`review`, `gh run rerun` and `gh issue`
-commands are refused, and it gets no token that may rerun jobs. The gate still requires a failed run on a
-Renovate PR (conditions 1 and 2), but only reports the others, so you can rehearse against a closed PR, an old
-failure or a head that was already handled.
+A dry run rehearses a real triage: the agent reads, reproduces, classifies and makes its fix locally, but
+pushes, comments, merges, reruns and opens nothing, and the report job prints the email instead of sending
+it. **What enforces that** (the one statement the rest of this README refers to): the gate, which still
+requires a failed run on a Renovate PR (conditions 1 and 2) and only reports the others, so you can rehearse
+against a closed PR, an old failure or a head that was already handled; the prompt and the skill, which tell
+the agent to stop at every write; a deny list that refuses the agent's `git push`, `gh api`,
+`gh pr merge`/`create`/`comment`/`edit`/`close`/`review`/`ready`/`reopen`, `gh issue`, `gh label`,
+`gh release`, `gh workflow run`, `gh run rerun` and `gh run cancel` commands; and the token that may rerun
+jobs, which a dry run does not get. The deny list is best effort: Claude Code's permission rules match the
+command text, so `bash -c`, `curl` or a script can get past them, and the Claude App token the agent holds can
+write. Rehearse on a PR whose real outcome you would accept.
 
 GitHub starts `workflow_dispatch` only from a workflow file on the default branch ("This event will only
-trigger a workflow run if the workflow file exists on the default branch"), so how you start a dry run depends
-on whether your caller is merged.
+trigger a workflow run if the workflow file exists on the default branch"), and claude-code-action does not
+run on `push`, so a caller cannot be rehearsed before it is merged. Adopt it in two steps instead:
 
-**After the caller is merged**, use **Run workflow** on the Actions tab, or from any checkout:
+1. Merge the caller **without the `workflow_run` trigger**: only `workflow_dispatch` and `schedule`, so it does
+   nothing until you dispatch it (the monthly lift aside, which is silent while nothing has expired).
+2. Dispatch a dry run against a Renovate PR that failed, from the Actions tab (**Run workflow**) or any
+   checkout, and review the transcript artifact and the printed email:
 
-```bash
-gh workflow run renovate-doctor.yml -f mode=triage -f pr=123 -f run_id=4567890 -f dry_run=true
-```
+   ```bash
+   gh workflow run renovate-doctor.yml -f mode=triage -f pr=123 -f run_id=4567890 -f dry_run=true
+   ```
 
-`run_id` is optional: without it the gate takes the failed runs on the PR's current head.
+   `run_id` is optional: without it the gate takes the failed runs on the PR's current head.
 
-**Before the caller is merged** (to rehearse in the PR that adds it), give the caller a temporary `push`
-trigger for your branch and hard-code the manual inputs, then remove all of it before merging:
-
-```yaml
-on:
-  push:
-    branches: [add-renovate-doctor] # TEMPORARY: rehearsal only, remove before merging
-  # ... the triggers from the complete caller ...
-
-jobs:
-  renovate-doctor:
-    # ... as in the complete caller, but in `with:` ...
-    with:
-      mode: triage
-      pr: 123 # TEMPORARY
-      run_id: 4567890 # TEMPORARY
-      dry_run: true # TEMPORARY
-      # ... the rest of your inputs ...
-```
-
-The gate takes any event that names a PR as a manual run, and a dry run uses the job's own token rather than
-minting the Claude App token, whose exchange refuses a workflow that is not on the default branch yet.
+3. In a second PR, add the `workflow_run` block from the complete caller above. From then on, failures are
+   triaged as they happen; the same dispatch still rehearses any PR.
 
 Where to look on the run's page:
 
 - **triage** job, **Gate** step: every condition and the would-be verdict.
 - **report** job, **Report** step: the email's subject and body, exactly as they would have been sent.
-- Artifact **`renovate-doctor-transcript-<run id>`** (kept 30 days): the agent's full transcript, including the
-  diff it would have pushed and the comment it would have posted. Artifact
-  **`renovate-doctor-outcome-<run id>`** holds the outcome file the email was built from.
+- Artifact **`renovate-doctor-transcript-<run id>-<attempt>`** (kept 30 days): the agent's full transcript,
+  including the diff it would have pushed and the comment it would have posted. Artifact
+  **`renovate-doctor-outcome-<run id>-<attempt>`** holds the outcome file the email was built from.
 
 `mode: lift` with `dry_run: true` rehearses the lift. The step that ticks the Dependency Dashboard prints what
 it would tick. The lift's diff and PR body are in the transcript artifact, because the lift script runs inside
@@ -428,7 +419,8 @@ Stated in the skill and enforced in code where code can enforce them:
 - **The agent never holds the mail key**: it lives only in the separate report job, on a GitHub-hosted runner,
   which has `issues` and `pull-requests` permissions and nothing else. The triage job gets only `contents`,
   `pull-requests`, `issues`, `actions` and `id-token`.
-- **Dry runs are enforced by the harness**: every command that writes to GitHub is refused, and the gate never
+- **Dry runs change nothing**, as far as the gate, the prompt, a deny list of GitHub-writing commands and a
+  withheld rerun token can enforce it; the deny list is best effort (see [Dry runs](#dry-runs)). The gate never
   launches a dry run on a PR that is not Renovate's.
 - **Nothing ever acts on a stale state**: the agent re-checks the PR's state and head before every write, and
   stops (`skipped`) if Renovate moved.
@@ -446,9 +438,9 @@ Stated in the skill and enforced in code where code can enforce them:
 - **A rerun started by the job's own token** is assumed to fire `workflow_run` again when it completes, as the
   first caller's own network-rerun automation already relies on. If it did not, a rerun that failed again
   would get no second look until Renovate pushes again.
-- **A dry run's refusals match command text, not programs.** `sh -c "git push"`, `curl` against the API or a
-  script that pushes would get past them; the skill forbids working around a refusal, but the job's token is
-  in reach of the agent either way. Rehearse on a PR whose real outcome you would accept.
+- **A dry run's deny list is best effort**, as [Dry runs](#dry-runs) says: it matches command text, so
+  `bash -c`, `curl` or a script can get past it, and the App token the agent holds can write. The skill forbids
+  working around a refusal. Rehearse on a PR whose real outcome you would accept.
 - **Manual and automatic runs on one PR do not share a concurrency group** in the caller above. The manual group
   is keyed by PR number, the automatic one by branch, so a manual dry run can run beside an automatic run. A
   real (not dry) manual run beside an automatic one is safe only because each re-checks the PR before writing.

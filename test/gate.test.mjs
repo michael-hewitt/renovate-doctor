@@ -483,7 +483,7 @@ describe('decide, on a manual run', () => {
     expect(result.reason).toBe('failure: no run on 457ec6c concluded failure');
   });
 
-  it('takes a push naming a PR as a manual run, so the caller can be rehearsed before it is merged', () => {
+  it('takes any other event naming a PR as a manual run', () => {
     const github = fakeGithub({ [routes.pull]: openPull, [routes.run(run.id)]: run });
     const result = decide(
       { eventName: 'push', event: {}, repository, pr: 3814, runId: run.id, dryRun: true },

@@ -47,7 +47,7 @@ on:
         type: string
         default: ''
       service_setup:
-        description: "Bash run before the install, on the caller's own commit (not the PR head); may write to $GITHUB_ENV."
+        description: "Plain Bash and Docker, run before the install on the caller's own commit (not the PR head); the project's toolchain is not installed yet. May write to $GITHUB_ENV."
         type: string
         default: ''
       service_teardown:
@@ -122,7 +122,7 @@ jobs:
       # is expected. A deny rule matches past a leading variable assignment, so `GH_TOKEN=... gh run rerun`
       # is refused by the `gh run rerun` rule.
       RENOVATE_DOCTOR_DRY_RUN_REFUSED: >-
-        Bash(git push:*),Bash(gh api:*),Bash(gh pr merge:*),Bash(gh pr create:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh pr close:*),Bash(gh pr review:*),Bash(gh run rerun:*),Bash(gh issue:*)
+        Bash(git push:*),Bash(gh api:*),Bash(gh pr merge:*),Bash(gh pr create:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh pr close:*),Bash(gh pr review:*),Bash(gh run rerun:*),Bash(gh issue:*),Bash(gh pr ready:*),Bash(gh pr reopen:*),Bash(gh workflow run:*),Bash(gh label:*),Bash(gh run cancel:*),Bash(gh release:*)
     # What the report job needs from this one. Job outputs rather than files, because nothing written in
     # this job's workspace after the install can be trusted; the outcome file goes as an artifact, as data.
     outputs:
@@ -135,6 +135,9 @@ jobs:
       pr_title: ${{ steps.gate.outputs.pr_title }}
       head_sha: ${{ steps.gate.outputs.head_sha }}
       agent_outcome: ${{ steps.agent.outcome }}
+      # The attempt this job ran in, which names its outcome artifact. A re-run of the report job alone is a
+      # later attempt but reads this job's outputs and artifact from the attempt that produced them.
+      attempt: ${{ github.run_attempt }}
     steps:
       # A self-hosted runner that is not ephemeral may keep RUNNER_TEMP between jobs, and a stale outcome
       # file or notes copy from an earlier run would be taken for this run's, so the doctor's scratch
@@ -244,7 +247,8 @@ jobs:
           echo "path=$path" >> "$GITHUB_OUTPUT"
 
       # A reusable workflow cannot vary `services`, so a database or other service the tests need is
-      # started here, from the caller's own commit, before the PR head is checked out; it may export
+      # started here, from the caller's own commit, before the PR head is checked out and before the
+      # project's Node and package manager are set up, so it is plain Bash and Docker. It may export
       # settings (a port, say) through $GITHUB_ENV for the steps after it.
       - name: Set up services
         if: steps.gate.outputs.launch == 'true' && inputs.service_setup != ''
@@ -307,11 +311,6 @@ jobs:
           BASH_MAX_TIMEOUT_MS: '1800000'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # A dry run uses the job's own token instead of the Claude App's. It pushes nothing, so it does not
-          # need the App token's power to start CI, and the App token exchange refuses a caller workflow that
-          # is not yet on the default branch, which is exactly where a rehearsal before merging runs. Empty
-          # means "mint the App token".
-          github_token: ${{ inputs.dry_run && github.token || '' }}
           # The action refuses bot actors unless they are listed here, and a triage run's actor is always a
           # bot: renovate[bot] for the run on Renovate's push, claude[bot] for the run on the agent's own fix
           # push, github-actions[bot] for a rerun the workflow's token started. Which PRs reach the agent
@@ -346,26 +345,27 @@ jobs:
           claude_args: |
             --allowedTools "Bash,Edit,Write,Read,Glob,Grep" ${{ inputs.dry_run && format('--disallowedTools "{0}"', env.RENOVATE_DOCTOR_DRY_RUN_REFUSED) || '' }}
 
-      # The agent's full transcript, for diagnosing a run that did something odd. `overwrite`, so a rerun of
-      # this job replaces its own earlier upload rather than failing on the name.
+      # The agent's full transcript, for diagnosing a run that did something odd. Named per attempt, so a
+      # re-run keeps the earlier attempt's transcript; `overwrite` covers a re-run of this one job alone.
       - name: Keep the agent transcript
         if: always() && steps.agent.outputs.execution_file != ''
         # Diagnostic only: a stalled upload must not mark a run that did its work as failed.
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
-          name: renovate-doctor-transcript-${{ github.run_id }}
+          name: renovate-doctor-transcript-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.agent.outputs.execution_file }}
           retention-days: 30
           overwrite: true
 
       # The outcome file is the report job's input. It goes over as an artifact, read there as data and
-      # validated; when the agent wrote none, nothing is uploaded and the report says so.
+      # validated; when the agent wrote none, nothing is uploaded and the report says so. Named per attempt,
+      # so a re-run of this job never leaves the report reading an earlier attempt's outcome.
       - name: Hand the outcome to the report job
         if: always() && steps.gate.outputs.launch == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: renovate-doctor-outcome-${{ github.run_id }}
+          name: renovate-doctor-outcome-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/renovate-doctor/outcome.json
           if-no-files-found: ignore
           retention-days: 30
@@ -484,8 +484,6 @@ jobs:
           BASH_DEFAULT_TIMEOUT_MS: '600000'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # A dry run touches nothing on GitHub, so the job's token will do; see the triage job.
-          github_token: ${{ inputs.dry_run && github.token || '' }}
           # A scheduled run's actor is whoever last changed the caller's workflow file, which is Renovate
           # when it updates the pinned renovate-doctor tag. See the triage job for the others.
           allowed_bots: 'renovate[bot],claude[bot],github-actions[bot]'
@@ -503,15 +501,16 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
-          name: renovate-doctor-transcript-${{ github.run_id }}
+          name: renovate-doctor-transcript-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.agent.outputs.execution_file }}
           retention-days: 30
           overwrite: true
 
       # lift.json to the report's LIFT_* settings, first match wins: `failure` when the file is missing (the
       # script never ran), the script exited non-zero or the agent step failed; `blocked` when an earlier
-      # lift PR is still open, so nothing was lifted; `opened` when a PR was opened (or, in a dry run, would
-      # have been, so the rehearsal prints the email a real run would send); otherwise `nothing`.
+      # lift PR is still open, so nothing was lifted; `opened` when a PR was opened, or, in a dry run, when
+      # `removed` (rules to be removed) is above 0, so the rehearsal prints the email a real run would send
+      # (`packages` can be empty for a rule matched by prefix); otherwise `nothing`.
       - name: Read the lift result
         id: lift
         if: always()
@@ -538,7 +537,7 @@ jobs:
               summary="lift failed: the agent step ended in $AGENT_OUTCOME after the script reported: $summary"
             elif [ "$(field blocked)" = true ]; then
               outcome=blocked
-            elif [ "$(field opened)" = true ] || { [ "$DRY_RUN" = true ] && [ -n "$(field packages)" ]; }; then
+            elif [ "$(field opened)" = true ] || { [ "$DRY_RUN" = true ] && [ "$(field removed)" -gt 0 ] 2>/dev/null; }; then
               outcome=opened
             else
               outcome=nothing
@@ -587,20 +586,25 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
-          name: renovate-doctor-outcome-${{ github.run_id }}
+          name: renovate-doctor-outcome-${{ github.run_id }}-${{ needs.triage.outputs.attempt }}
           path: ${{ runner.temp }}/renovate-doctor
 
-      # Triage: whenever the agent was launched, however it ended, and when the gate produced an outcome
-      # itself (fix attempts exhausted, or a gate error). Lift: always; the script is silent when nothing
-      # had expired, and an empty LIFT_OUTCOME (the lift job died before its last step) is a failure.
+      # Triage: whenever the agent was launched, however it ended; when the gate produced an outcome itself
+      # (fix attempts exhausted, or a gate error); and when the triage job failed or was cancelled before the
+      # gate ran (no launch output at all), which would otherwise be red and silent on every Renovate
+      # failure, a typo in the caller's inputs say. Lift: always; the script is silent when nothing had
+      # expired, and an empty LIFT_OUTCOME (the lift job died before its last step) is a failure.
       - name: Report
         if: >-
           (inputs.mode == 'triage' && (needs.triage.outputs.launch == 'true' || needs.triage.outputs.outcome != '')) ||
+          (inputs.mode == 'triage' && (needs.triage.result == 'failure' || needs.triage.result == 'cancelled') &&
+          needs.triage.outputs.launch == '') ||
           inputs.mode == 'lift'
         env:
           REPORT_MODE: ${{ inputs.mode }}
           OUTCOME_FILE: ${{ runner.temp }}/renovate-doctor/outcome.json
           AGENT_OUTCOME: ${{ needs.triage.outputs.agent_outcome }}
+          TRIAGE_RESULT: ${{ needs.triage.result }}
           GATE_OUTCOME: ${{ needs.triage.outputs.outcome }}
           GATE_SUMMARY: ${{ needs.triage.outputs.summary }}
           GATE_REASON: ${{ needs.triage.outputs.reason }}
