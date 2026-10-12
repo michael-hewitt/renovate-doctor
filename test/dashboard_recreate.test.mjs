@@ -25,13 +25,18 @@ const holdTest = fs.readFileSync(path.join(fixtures, 'pwa_assets_generator_hold.
 
 const repository = 'crescendosw/webapp';
 const routes = {
-  open: `repos/${repository}/pulls?state=open&per_page=100`,
+  pulls: (page) => `repos/${repository}/pulls?state=all&sort=created&direction=desc&per_page=100&page=${page}`,
   issues: `repos/${repository}/issues?creator=renovate%5Bbot%5D&state=open&per_page=100`,
   dashboard: `repos/${repository}/issues/1460`,
 };
 
+const daysAgo = (days) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+// Renovate reopened the generator's update 10 days ago, after its hold was lifted 15 days ago.
 const generatorPr = {
   number: 3886,
+  created_at: daysAgo(10),
+  merged_at: null,
   title: 'chore(deps): update dependency @vite-pwa/assets-generator to v2',
   html_url: 'https://github.com/crescendosw/webapp/pull/3886',
   state: 'open',
@@ -172,24 +177,27 @@ function fakeGithub(responses) {
   };
 }
 
-function githubWith({ open = [generatorPr], issues = [dashboard] } = {}) {
-  return fakeGithub({ [routes.open]: open, [routes.issues]: issues });
+function githubWith({ pulls = [generatorPr], issues = [dashboard] } = {}) {
+  return fakeGithub({ [routes.pulls(1)]: pulls, [routes.issues]: issues });
 }
 
 const patches = (github) => github.calls.filter((call) => call.method === 'PATCH');
 
 describe('findLiftedPackages', () => {
   it('finds holds lifted by a lift commit and by a condition-test fix commit, newest first, each once', () => {
-    expect(findLiftedPackages({ days: 60, configPath: 'renovate.json', cwd: repo })).toEqual([
+    const lifted = findLiftedPackages({ days: 60, configPath: 'renovate.json', cwd: repo });
+    expect(lifted.map(({ name, commit }) => ({ name, commit }))).toEqual([
       { name: 'left-pad', commit: commits[6] },
       { name: '@vite-pwa/assets-generator', commit: commits[3] },
       { name: 'typescript', commit: commits[2] },
     ]);
+    // The lifting commit's date, which the open-PR check compares Renovate's PRs against.
+    expect(Math.abs(Date.parse(lifted[1].date) - Date.parse(daysAgo(15)))).toBeLessThan(60_000);
   });
 
   it('reads only the window', () => {
-    expect(findLiftedPackages({ days: 6, configPath: 'renovate.json', cwd: repo })).toEqual([
-      { name: 'left-pad', commit: commits[6] },
+    expect(findLiftedPackages({ days: 6, configPath: 'renovate.json', cwd: repo }).map((entry) => entry.name)).toEqual([
+      'left-pad',
     ]);
     expect(
       findLiftedPackages({ days: 120, configPath: 'renovate.json', cwd: repo }).map((entry) => entry.name),
@@ -213,14 +221,14 @@ describe('findLiftedPackages', () => {
 });
 
 describe('recreate', () => {
-  it('ticks the lifted package without an open Renovate PR, and not the one Renovate reopened', () => {
+  it('ticks the lifted package Renovate opened no PR for since, and not the one Renovate reopened', () => {
     const github = githubWith();
     const lines = [];
     const result = recreate({ repository, cwd: repo }, { github, out: (line) => lines.push(line) });
 
     expect(result).toMatchObject({
       lifted: ['left-pad', '@vite-pwa/assets-generator', 'typescript'],
-      open: ['@vite-pwa/assets-generator'],
+      reopened: ['@vite-pwa/assets-generator'],
       ticked: ['typescript'],
     });
     expect(patches(github)).toHaveLength(1);
@@ -233,16 +241,74 @@ describe('recreate', () => {
       ),
     );
     const printed = lines.join('');
-    expect(printed).toContain(`typescript (lifted in ${commits[2].slice(0, 7)}): no open Renovate PR.`);
+    expect(printed).toContain(
+      `typescript (lifted in ${commits[2].slice(0, 7)} on ${daysAgo(20).slice(0, 10)}): Renovate has opened no PR for it since.`,
+    );
+    expect(printed).toContain(`${generatorPr.html_url} since (open); left alone.`);
     expect(printed).toContain(
       'Ticking for typescript: - [ ] <!-- recreate-branch=renovate/typescript-7.x -->[fix(deps): update dependency typescript to v7](../pull/3237)',
     );
   });
 
-  it('counts an open Renovate PR whose branch names the package by its slug', () => {
+  it('counts a Renovate PR whose branch names the package by its slug', () => {
     const renamed = { ...generatorPr, title: 'chore(deps): update pwa assets to v2' };
-    const github = githubWith({ open: [renamed] });
-    expect(recreate({ repository, cwd: repo }, { github, out: () => {} }).open).toEqual(['@vite-pwa/assets-generator']);
+    const github = githubWith({ pulls: [renamed] });
+    expect(recreate({ repository, cwd: repo }, { github, out: () => {} }).reopened).toEqual([
+      '@vite-pwa/assets-generator',
+    ]);
+  });
+
+  it("never undoes a person's close: a Renovate PR opened since the lift and closed counts, as a merged one does", () => {
+    const closed = { ...generatorPr, state: 'closed' };
+    const merged = {
+      ...generatorPr,
+      number: 3895,
+      title: 'fix(deps): update dependency typescript to v7',
+      head: { ref: 'renovate/typescript-7.x' },
+      state: 'closed',
+      merged_at: daysAgo(2),
+      created_at: daysAgo(4),
+    };
+    const github = githubWith({ pulls: [merged, closed] });
+    const result = recreate({ repository, cwd: repo }, { github, out: () => {} });
+    expect(result.reopened).toEqual(['@vite-pwa/assets-generator', 'typescript']);
+    expect(result.ticked).toEqual([]);
+    expect(patches(github)).toEqual([]);
+  });
+
+  it('ignores a Renovate PR from before the lift, and never ticks a line that is not a recreate line', () => {
+    // The generator's PR predates its lift, so it does not count; but the generator's dashboard line is
+    // the "Open" section's rebase checkbox, which is never ticked.
+    const github = githubWith({ pulls: [{ ...generatorPr, created_at: daysAgo(30) }] });
+    const result = recreate({ repository, cwd: repo }, { github, out: () => {} });
+    expect(result.reopened).toEqual([]);
+    expect(result.ticked).toEqual(['typescript']);
+    expect(patches(github)[0].body.body).toContain(
+      ' - [ ] <!-- rebase-branch=renovate/vite-pwa-assets-generator-2.x -->',
+    );
+  });
+
+  it('reads further pages of PRs while they reach back to the oldest lift', () => {
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      ...generatorPr,
+      number: 4000 + i,
+      title: 'chore(deps): update dependency jsdom to v30',
+      head: { ref: 'renovate/jsdom-30.x' },
+      created_at: daysAgo(1),
+    }));
+    const github = fakeGithub({
+      [routes.pulls(1)]: fullPage,
+      // typescript was lifted 20 days ago, the oldest lift: its PR from 18 days ago counts; the page ends
+      // with a PR older than every lift, so no third page is read.
+      [routes.pulls(2)]: [
+        { ...generatorPr, title: 'fix(deps): update dependency typescript to v7', created_at: daysAgo(18) },
+        { ...generatorPr, created_at: daysAgo(25) },
+      ],
+      [routes.issues]: [dashboard],
+    });
+    const result = recreate({ repository, cwd: repo }, { github, out: () => {} });
+    expect(result.reopened).toEqual(['typescript']);
+    expect(github.calls.filter((call) => call.route.includes('state=all'))).toHaveLength(2);
   });
 
   it('ticks a dashboard line that names the package only by its branch slug', () => {
@@ -252,7 +318,7 @@ describe('recreate', () => {
         '[chore(deps): update dependency @vite-pwa/assets-generator to v2](../pull/3886)',
         '[chore(deps): update pwa assets to v2](../pull/3886)',
       );
-    const github = githubWith({ open: [], issues: [{ ...dashboard, body }] });
+    const github = githubWith({ pulls: [], issues: [{ ...dashboard, body }] });
     const result = recreate({ repository, cwd: repo }, { github, out: () => {} });
     expect(result.ticked).toEqual(['@vite-pwa/assets-generator', 'typescript']);
     expect(patches(github)[0].body.body).toContain(
@@ -269,7 +335,7 @@ describe('recreate', () => {
     const lines = [];
     expect(recreate({ repository, cwd: repo }, { github, out: (line) => lines.push(line) }).ticked).toEqual([]);
     expect(patches(github)).toEqual([]);
-    expect(lines.join('')).toContain('no unchecked line');
+    expect(lines.join('')).toContain('no unchecked recreate line');
   });
 
   it('prints what it would tick in a dry run and saves nothing', () => {
@@ -319,10 +385,19 @@ describe('namesPackage', () => {
 });
 
 describe('tickLines', () => {
-  it('ticks only unchecked lines', () => {
-    const { body, ticked } = tickLines(' - [ ] a foo\n - [x] b foo\n - [ ] c bar\n', ['foo']);
-    expect(body).toBe(' - [x] a foo\n - [x] b foo\n - [ ] c bar\n');
-    expect(ticked).toEqual([{ name: 'foo', line: '- [ ] a foo' }]);
+  it('ticks only unchecked recreate lines', () => {
+    const lines = [
+      ' - [ ] <!-- recreate-branch=renovate/foo-2.x -->[update foo to v2](../pull/1)',
+      ' - [x] <!-- recreate-branch=renovate/foo-3.x -->[update foo to v3](../pull/2)',
+      ' - [ ] <!-- rebase-branch=renovate/foo-1.x -->[update foo to v1.2](../pull/3)',
+      ' - [ ] <!-- approve-branch=renovate/foo-4.x -->update foo to v4',
+      ' - [ ] <!-- approvePr-branch=renovate/foo-5.x -->update foo to v5',
+      ' - [ ] <!-- unlimit-branch=renovate/foo-6.x -->update foo to v6',
+      ' - [ ] <!-- recreate-branch=renovate/bar-2.x -->[update bar to v2](../pull/7)',
+    ];
+    const { body, ticked } = tickLines(lines.join('\n'), ['foo']);
+    expect(body).toBe([lines[0].replace('[ ]', '[x]'), ...lines.slice(1)].join('\n'));
+    expect(ticked.map((entry) => entry.line)).toEqual([lines[0].trim()]);
   });
 });
 

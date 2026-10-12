@@ -8,11 +8,14 @@
 // Renovate PR the condition test fired on - and both show in the Renovate config's git history, so that
 // history is the source: a package with a disabled rule (`"enabled": false`) in the config before a
 // commit on the default branch in the last 60 days and none after it was lifted by that commit, unless it
-// is held again today. For each lifted package this script checks whether Renovate has an open PR for it;
-// when not, it ticks every unchecked Dependency Dashboard line naming the package (the "recreate", "other
-// branch" or "pending" checkbox), and Renovate acts on the ticks on its next run. A ticked line is left
-// alone, so a second run changes nothing: the script is idempotent. A dry run prints what it would tick and
-// saves nothing.
+// is held again today. A lifted package is left alone when Renovate has opened any PR naming it since the
+// lifting commit, whatever became of that PR: Renovate has acted on the lift, and if a person then closed
+// the PR, that was their decision to keep, not one to undo next month. Otherwise this script ticks every
+// unchecked "recreate" line naming the package (`<!-- recreate-branch=... -->`, Renovate's form for an
+// update blocked by a closed PR) on the Dependency Dashboard, and Renovate acts on the ticks on its next
+// run. Other checkboxes (rebase, approve, unlimit) are never ticked: they act on updates that are not
+// blocked. A ticked line is left alone, so a second run changes nothing: the script is idempotent. A dry
+// run prints what it would tick and saves nothing.
 //
 // Usage: node scripts/dashboard-recreate.mjs [--days N] [--dry-run]
 //
@@ -108,38 +111,58 @@ function configAt(git, revision, configPath) {
 
 /**
  * The packages whose hold was lifted by a commit on the checked-out branch in the last `days` days, each
- * once, with the newest commit that lifted it, leaving out packages the config holds again today. Only the
+ * once, with the newest commit that lifted it and that commit's date (committer date, ISO 8601), leaving out packages the config holds again today. Only the
  * branch's own commits are read (`--first-parent`), so a merged branch counts as the one change it made.
  * A commit whose config, before or after, is not valid JSON is passed over: comparing against an
  * unreadable file would count every hold as lifted.
  *
  * @param {{ days: number, configPath: string, cwd?: string }} input
  * @param {{ exec?: Exec }} [deps]
- * @returns {{ name: string, commit: string }[]}
+ * @returns {{ name: string, commit: string, date: string }[]}
  */
 export function findLiftedPackages({ days, configPath, cwd }, { exec = defaultExec } = {}) {
   const git = (args) => exec('git', args, { cwd });
-  const commits = git(['log', '--first-parent', `--since=${days}.days`, '--format=%H', '--', configPath])
+  const commits = git(['log', '--first-parent', `--since=${days}.days`, '--format=%H %cI', '--', configPath])
     .split('\n')
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((line) => {
+      const [commit, date] = line.split(' ');
+      return { commit, date };
+    });
   const heldNow = heldPackages(configAt(git, 'HEAD', configPath) ?? {});
-  /** @type {Map<string, string>} */
+  /** @type {Map<string, { commit: string, date: string }>} */
   const lifted = new Map();
-  for (const commit of commits) {
+  for (const { commit, date } of commits) {
     const before = configAt(git, `${commit}^`, configPath);
     const after = configAt(git, commit, configPath);
     if (before === undefined || after === undefined) continue;
     const heldAfter = heldPackages(after);
     for (const name of heldPackages(before)) {
-      if (!heldAfter.has(name) && !heldNow.has(name) && !lifted.has(name)) lifted.set(name, commit);
+      if (!heldAfter.has(name) && !heldNow.has(name) && !lifted.has(name)) lifted.set(name, { commit, date });
     }
   }
-  return [...lifted].map(([name, commit]) => ({ name, commit }));
+  return [...lifted].map(([name, lift]) => ({ name, ...lift }));
 }
 
 /**
- * Ticks every unchecked checkbox line naming one of the packages. Lines already ticked, and lines naming
- * none of them, are returned as they were.
+ * The PRs `renovate[bot]` created at or after `since` (an ISO date), open, closed or merged. PRs are read
+ * newest first, page by page, until a page reaches back past `since`.
+ */
+export function renovatePullsSince(github, repository, since) {
+  const cutoff = Date.parse(since);
+  const pulls = [];
+  for (let page = 1; ; page += 1) {
+    const batch = github.ghApi(
+      `repos/${repository}/pulls?state=all&sort=created&direction=desc&per_page=100&page=${page}`,
+    );
+    pulls.push(...batch.filter((pull) => pull.user?.login === renovateBot && Date.parse(pull.created_at) >= cutoff));
+    if (batch.length < 100 || Date.parse(batch.at(-1).created_at) < cutoff) return pulls;
+  }
+}
+
+/**
+ * Ticks every unchecked "recreate" line (`<!-- recreate-branch=... -->`) naming one of the packages. Lines
+ * already ticked, other checkboxes, and lines naming none of the packages are returned as they were.
  *
  * @param {string} body
  * @param {string[]} packages
@@ -148,7 +171,7 @@ export function findLiftedPackages({ days, configPath, cwd }, { exec = defaultEx
 export function tickLines(body, packages) {
   const ticked = [];
   const lines = body.split('\n').map((line) => {
-    const unchecked = /^(\s*[-*] )\[ \](.*)$/.exec(line);
+    const unchecked = /^(\s*[-*] )\[ \](\s*<!-- recreate-branch=.*)$/.exec(line);
     if (!unchecked) return line;
     const named = packages.filter((name) => namesPackage(unchecked[2], name));
     if (!named.length) return line;
@@ -159,11 +182,11 @@ export function tickLines(body, packages) {
 }
 
 /**
- * Ticks the Dependency Dashboard for every lifted package that Renovate has no open PR for.
+ * Ticks the Dependency Dashboard for every lifted package Renovate has opened no PR for since its lift.
  *
  * @param {{ repository: string, days?: number, dryRun?: boolean, configPath?: string, cwd?: string }} input
  * @param {{ github: { ghApi: Function }, exec?: Exec, out?: (text: string) => void }} deps
- * @returns {{ ticked: string[], lifted: string[], open: string[], dashboardUrl: string }}
+ * @returns {{ ticked: string[], lifted: string[], reopened: string[], dashboardUrl: string }}
  */
 export function recreate(
   { repository, days = 60, dryRun = false, configPath = 'renovate.json', cwd = process.cwd() },
@@ -171,7 +194,7 @@ export function recreate(
 ) {
   if (!repository || !repository.includes('/')) throw new Error(`GITHUB_REPOSITORY is not owner/repo: ${repository}`);
   const heading = `renovate-doctor dashboard-recreate${dryRun ? ' (dry run)' : ''}`;
-  const result = { ticked: /** @type {string[]} */ ([]), lifted: [], open: [], dashboardUrl: '' };
+  const result = { ticked: /** @type {string[]} */ ([]), lifted: [], reopened: [], dashboardUrl: '' };
 
   const lifted = findLiftedPackages({ days, configPath, cwd }, { exec });
   result.lifted = lifted.map((entry) => entry.name);
@@ -180,19 +203,23 @@ export function recreate(
     return result;
   }
 
-  const renovatePulls = github
-    .ghApi(`repos/${repository}/pulls?state=open&per_page=100`, { paginate: true })
-    .filter((pull) => pull.user?.login === renovateBot);
+  const oldestLift = lifted.map((entry) => entry.date).reduce((a, b) => (Date.parse(a) <= Date.parse(b) ? a : b));
+  const renovatePulls = renovatePullsSince(github, repository, oldestLift);
   const missing = [];
-  for (const { name, commit } of lifted) {
-    const by = `lifted in ${commit.slice(0, 7)}`;
-    const reopened = renovatePulls.find((pull) => namesPackage(pull.title, name) || namesPackage(pull.head.ref, name));
+  for (const { name, commit, date } of lifted) {
+    const by = `lifted in ${commit.slice(0, 7)} on ${date.slice(0, 10)}`;
+    const reopened = renovatePulls.find(
+      (pull) =>
+        Date.parse(pull.created_at) >= Date.parse(date) &&
+        (namesPackage(pull.title, name) || namesPackage(pull.head.ref, name)),
+    );
     if (reopened) {
-      result.open.push(name);
-      out(`${name} (${by}): Renovate has reopened it as ${reopened.html_url}.\n`);
+      result.reopened.push(name);
+      const state = reopened.merged_at ? 'merged' : reopened.state;
+      out(`${name} (${by}): Renovate has opened ${reopened.html_url} since (${state}); left alone.\n`);
     } else {
       missing.push(name);
-      out(`${name} (${by}): no open Renovate PR.\n`);
+      out(`${name} (${by}): Renovate has opened no PR for it since.\n`);
     }
   }
   if (!missing.length) return result;
@@ -210,7 +237,9 @@ export function recreate(
 
   const { body, ticked } = tickLines(dashboard.body ?? '', missing);
   if (!ticked.length) {
-    out(`${heading}: no unchecked line on ${dashboard.html_url} names ${missing.join(', ')}; nothing ticked.\n`);
+    out(
+      `${heading}: no unchecked recreate line on ${dashboard.html_url} names ${missing.join(', ')}; nothing ticked.\n`,
+    );
     return result;
   }
   for (const { name, line } of ticked) out(`${dryRun ? 'Would tick' : 'Ticking'} for ${name}: ${line}\n`);

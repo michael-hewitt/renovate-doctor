@@ -5,10 +5,13 @@
 // today or earlier the hold has expired. This script removes every expired hold from the config, deletes
 // the condition tests guarding them (tracked files that name the package and read the Renovate config),
 // commits that on `renovate-doctor/lift-<today>`, pushes, opens a PR carrying `<!-- renovate-doctor lift -->`
-// and enables squash auto-merge, so a dated retry never waits on a person. When the branch already has an
-// open PR (a rerun of the same day's job), that PR is reused rather than opened again. A dry run makes the
-// same edits in the working tree, prints the diff and the PR body, and then puts the files back; it
-// touches nothing on GitHub.
+// and enables squash auto-merge, so a dated retry never waits on a person. Auto-merge is enabled only when
+// the default branch requires status checks (branch protection or a ruleset): without them it would merge
+// before CI has run, so the PR is left for a person and the summary says so. When the branch already has an
+// open PR (a rerun of the same day's job), that PR is reused rather than opened again; when another lift
+// PR is still open, nothing is lifted (`blocked`), because a second PR would lift the same holds again. A
+// dry run makes the same edits in the working tree, prints the diff and the PR body, and then puts the
+// files back; it touches nothing on GitHub.
 //
 // Usage: node scripts/lift.mjs [--today YYYY-MM-DD] [--dry-run]
 //
@@ -21,8 +24,9 @@
 // made with GITHUB_TOKEN never trigger CI, so the PR's required checks would never run and auto-merge
 // would wait forever.
 //
-// Outputs (`$GITHUB_OUTPUT`): `opened` (`true`/`false`), `pr_url`, `packages` (comma-separated), `summary`
-// (one line, for the email subject). The same outputs, with the script's `exit_code`, also go to
+// Outputs (`$GITHUB_OUTPUT`): `opened` (`true`/`false`), `blocked` (`true` when an earlier lift PR is
+// still open; `pr_url` is then that PR), `pr_url`, `packages` (comma-separated), `summary` (one line, for
+// the email subject). The same outputs, with the script's `exit_code`, also go to
 // `$RUNNER_TEMP/renovate-doctor/lift.json` when RUNNER_TEMP is set: in the workflow the script runs inside
 // the claude-code-action step, whose `$GITHUB_OUTPUT` belongs to the action's own inner step, so the next
 // step reads the file instead. The commit is authored by the git identity the checkout already has;
@@ -39,7 +43,7 @@ import { createGithub } from '../lib/github.mjs';
 import { createGitGrep, findConditionTests, isValidIsoDate, removeExpiredRules } from '../lib/renovate_config.mjs';
 import { formatOutputs } from './gate.mjs';
 
-/** The line every lift PR body carries; `dashboard-recreate.mjs` finds merged lift PRs by it. */
+/** The line every lift PR body carries; a lift finds an earlier, still-open lift PR by it. */
 export const liftMarker = '<!-- renovate-doctor lift -->';
 
 const fallbackIdentity = { name: 'renovate-doctor[bot]', email: 'noreply@github.com' };
@@ -58,6 +62,7 @@ const fallbackIdentity = { name: 'renovate-doctor[bot]', email: 'noreply@github.
  *   malformed: MalformedMarker[],
  *   conditionTests: string[],
  *   reused?: boolean,
+ *   blocked?: boolean,
  * }} LiftResult
  */
 
@@ -89,35 +94,125 @@ export function liftedPackages(removed) {
   return [...new Set(removed.flatMap((rule) => rule.packages))];
 }
 
-/** The PR title, which is also the commit message. */
-export function prTitle(packages) {
-  return `chore(deps): lift expired Renovate holds (${packages.join(', ')})`;
+/**
+ * The names a removed hold goes by in the title, the summary and the PR body: its packages, or, for a rule
+ * matched some other way (`matchPackagePrefixes`, `matchSourceUrls` and the like), its position in
+ * `packageRules` and the start of its description, so the title never reads `()`.
+ *
+ * @param {RemovedRule} rule
+ */
+export function holdNames(rule) {
+  if (rule.packages.length) return rule.packages;
+  const about = rule.description.slice(0, 40).trim();
+  return [`rule ${rule.index}${about ? `: ${about}` : ''}`];
 }
 
-/** The one-line summary for the email subject. */
-export function summarize(packages, { dryRun = false } = {}) {
-  const what = `${plural(packages.length, 'expired hold')}: ${packages.join(', ')}`;
+function holdLabels(removed) {
+  return [...new Set(removed.flatMap(holdNames))];
+}
+
+/** The PR title, which is also the commit message. */
+export function prTitle(removed) {
+  return `chore(deps): lift expired Renovate holds (${holdLabels(removed).join(', ')})`;
+}
+
+/** The one-line summary for the email subject; it counts holds (rules), not packages. */
+export function summarize(removed, { dryRun = false } = {}) {
+  const what = `${plural(removed.length, 'expired hold')}: ${holdLabels(removed).join(', ')}`;
   return dryRun ? `dry run: would lift ${what}` : `lifted ${what}`;
 }
 
+function httpStatus(error) {
+  const status = /\(HTTP (\d{3})\)/.exec(`${error?.stderr ?? ''}\n${error?.message ?? ''}`)?.[1];
+  return status ? Number(status) : undefined;
+}
+
 /**
- * The lift PR's body: why it exists, one `- <package> (held until <date>): <description>` line per lifted
- * package (the form `dashboard-recreate.mjs` reads back), the deleted condition tests, any malformed
- * markers left alone, and the lift marker.
+ * Whether `branch` requires status checks before a merge, from branch protection and, when that says
+ * nothing (404, or no checks), from the rulesets that apply to the branch. `required` is undefined when
+ * GitHub would not say (a token without admin rights gets 403 on branch protection), with the reason.
  *
- * @param {{ removed: RemovedRule[], malformed: MalformedMarker[], conditionTests: string[], configPath: string }} input
+ * @returns {{ required: boolean | undefined, reason?: string }}
  */
-export function formatPrBody({ removed, malformed, conditionTests, configPath }) {
+export function readRequiredChecks(github, repository, branch) {
+  const unreadable = (where, error) => ({
+    required: undefined,
+    reason: `${where}: ${oneLine(error?.stderr || error?.message || error)}`,
+  });
+  try {
+    const checks = github.ghApi(`repos/${repository}/branches/${branch}/protection/required_status_checks`);
+    if ((checks?.contexts?.length ?? 0) + (checks?.checks?.length ?? 0) > 0) return { required: true };
+  } catch (error) {
+    if (httpStatus(error) !== 404) return unreadable('branch protection', error);
+  }
+  try {
+    const rules = github.ghApi(`repos/${repository}/rules/branches/${branch}`) ?? [];
+    const required = rules.some(
+      (rule) => rule.type === 'required_status_checks' && rule.parameters?.required_status_checks?.length > 0,
+    );
+    return { required };
+  } catch (error) {
+    if (httpStatus(error) === 404) return { required: false };
+    return unreadable('rulesets', error);
+  }
+}
+
+/**
+ * What to do about auto-merge, given the required checks: enable it when checks are required; leave it
+ * off when none are, because `gh pr merge --auto` would then merge before CI has run; enable it, with a
+ * note, when the protection could not be read, since a project that adopted renovate-doctor is told to
+ * require its checks. `note` goes into the summary; `paragraph` into the PR body.
+ */
+function planAutoMerge(checks) {
+  if (checks.required === true) return { enable: true, note: '', paragraph: '' };
+  if (checks.required === false) {
+    return {
+      enable: false,
+      note: 'auto-merge was not enabled because the default branch requires no checks',
+      paragraph:
+        'Auto-merge was not enabled: the default branch requires no status checks, so auto-merge would merge ' +
+        'this PR at once, before CI has run on it. Merge it by hand once CI passes.',
+    };
+  }
+  return {
+    enable: true,
+    note: `auto-merge was enabled, but the default branch's protection could not be read (${checks.reason})`,
+    paragraph:
+      "Auto-merge was enabled, but the default branch's required checks could not be read " +
+      `(${checks.reason}); make sure CI must pass before this merges.`,
+  };
+}
+
+function withNote(summary, note) {
+  return note ? `${summary}; ${note}` : summary;
+}
+
+/**
+ * The lift PR's body: why it exists, a note when auto-merge is off or unverified, one
+ * `- <package> (held until <date>): <description>` line per lifted package (for people; the dashboard tick
+ * reads the config's history instead), the deleted condition tests, any malformed markers left alone, and
+ * the lift marker.
+ *
+ * @param {{
+ *   removed: RemovedRule[],
+ *   malformed: MalformedMarker[],
+ *   conditionTests: string[],
+ *   configPath: string,
+ *   autoMergeParagraph?: string,
+ * }} input
+ */
+export function formatPrBody({ removed, malformed, conditionTests, configPath, autoMergeParagraph = '' }) {
   const lines = [
     `renovate-doctor removed the Renovate package rules below from \`${configPath}\` because the date in their ` +
       '`remove after` marker has passed, together with the condition tests guarding them. Once this merges, ' +
       "Renovate reopens each update on its next run; if it has not, the lift job's next run ticks the " +
       "update's checkbox on the Dependency Dashboard to recreate it. If an update still cannot be taken, " +
       'it fails CI and renovate-doctor triages it like any other.',
+    ...(autoMergeParagraph ? ['', autoMergeParagraph] : []),
     '',
     'Lifted holds:',
     ...removed.flatMap((rule) =>
-      rule.packages.map((name) => `- ${name} (held until ${rule.date}): ${rule.description}`),
+      holdNames(rule).map((name) => `- ${name} (held until ${rule.date}): ${rule.description}`),
     ),
   ];
   if (conditionTests.length) lines.push('', 'Deleted condition tests:', ...conditionTests.map((file) => `- ${file}`));
@@ -226,42 +321,75 @@ export function lift(
   }
 
   const branch = `renovate-doctor/lift-${today}`;
+  let autoMerge = { enable: true, note: '', paragraph: '' };
+  const enableAutoMerge = (url) => {
+    if (!autoMerge.enable) {
+      out(`Auto-merge not enabled on ${url}: the default branch requires no checks.\n`);
+      return;
+    }
+    github.gh(['pr', 'merge', url, '--auto', '--squash']);
+    out(`Enabled squash auto-merge on ${url}.${autoMerge.note ? ` Note: ${autoMerge.note}.` : ''}\n`);
+  };
   if (!dryRun) {
-    const existing = findOpenPr(github, repository, branch);
-    if (existing) {
+    const base = defaultBranch || github.ghApi(`repos/${repository}`).default_branch;
+    defaultBranch = base;
+    const openPrs = github.ghApi(`repos/${repository}/pulls?state=open&per_page=100`, { paginate: true });
+    const sameBranch = openPrs.find((pr) => pr.head?.ref === branch);
+    const earlier = openPrs.find((pr) => pr.head?.ref !== branch && pr.body?.includes(liftMarker));
+    if (!sameBranch && earlier) {
+      // An earlier lift PR that has not merged still removes the holds it lifted; a second PR built from
+      // the default branch would lift them again and conflict with it. A person has to look at the first.
+      out(`${heading}: the previous lift PR is still open, ${earlier.html_url}; nothing lifted.\n`);
+      describeMalformed(removal.malformed);
+      return {
+        opened: false,
+        blocked: true,
+        prUrl: earlier.html_url,
+        packages: liftedPackages(removal.removed),
+        summary: `previous lift PR still open: ${earlier.html_url}`,
+        removed: removal.removed,
+        malformed: removal.malformed,
+        conditionTests: [],
+      };
+    }
+    autoMerge = planAutoMerge(readRequiredChecks(github, repository, base));
+    if (sameBranch) {
       // A rerun of the same day's job: the branch and PR are already there, and pushing a second commit
       // built from the default branch would be rejected, so the open PR is the result.
-      out(`${heading}: ${branch} already has an open PR, ${existing.html_url}; reusing it.\n`);
-      github.gh(['pr', 'merge', existing.html_url, '--auto', '--squash']);
-      const packages = liftedPackages(removal.removed);
+      out(`${heading}: ${branch} already has an open PR, ${sameBranch.html_url}; reusing it.\n`);
+      enableAutoMerge(sameBranch.html_url);
       return {
         opened: true,
-        prUrl: existing.html_url,
-        packages,
-        summary: summarize(packages),
+        prUrl: sameBranch.html_url,
+        packages: liftedPackages(removal.removed),
+        summary: withNote(summarize(removal.removed), autoMerge.note),
         removed: removal.removed,
         malformed: removal.malformed,
         conditionTests: [],
         reused: true,
       };
     }
-    const base = defaultBranch || github.ghApi(`repos/${repository}`).default_branch;
     git(['switch', '-C', branch, `origin/${base}`]);
     // The config is read again on the new branch, which is the default branch's tip by construction.
     removal = removeExpiredRules(fs.readFileSync(configFile, 'utf8'), today);
     if (!removal.removed.length) throw new Error(`origin/${base}'s ${configPath} has no expired holds after all`);
-    defaultBranch = base;
   }
 
   const packages = liftedPackages(removal.removed);
   const conditionTests = [...new Set(packages.flatMap((name) => findConditionTests(name, { gitGrep })))]
     .filter((file) => path.normalize(file) !== path.normalize(configPath))
     .sort();
-  const title = prTitle(packages);
-  const body = formatPrBody({ removed: removal.removed, malformed: removal.malformed, conditionTests, configPath });
+  const title = prTitle(removal.removed);
+  const body = formatPrBody({
+    removed: removal.removed,
+    malformed: removal.malformed,
+    conditionTests,
+    configPath,
+    autoMergeParagraph: autoMerge.paragraph,
+  });
 
   for (const rule of removal.removed) {
-    out(`Expired: ${rule.packages.join(', ')} (held until ${rule.date}): ${rule.description}\n`);
+    out(`Expired: ${holdNames(rule).join(', ')} (held until ${rule.date}): ${rule.description}\n`);
   }
   describeMalformed(removal.malformed);
   for (const file of conditionTests) out(`Condition test: ${file}\n`);
@@ -277,7 +405,7 @@ export function lift(
         opened: false,
         prUrl: '',
         packages,
-        summary: summarize(packages, { dryRun: true }),
+        summary: summarize(removal.removed, { dryRun: true }),
         removed: removal.removed,
         malformed: removal.malformed,
         conditionTests,
@@ -300,6 +428,13 @@ export function lift(
     if (!current) identity.push('-c', `user.${key}=${value}`);
   }
   git([...identity, 'commit', '-q', '-m', title]);
+  // A branch left on the remote by an earlier run today that failed before opening its PR (there is no
+  // open PR on it, or it would have been reused above) is this script's own, so it is replaced rather than
+  // left to reject the push.
+  if (git(['ls-remote', '--heads', 'origin', `refs/heads/${branch}`]).trim()) {
+    out(`${branch} is on the remote from an earlier run with no open PR; deleting it first.\n`);
+    git(['push', 'origin', '--delete', branch]);
+  }
   pushWithRetries(git, branch, { sleep });
   out(`Pushed ${branch}.\n`);
 
@@ -317,18 +452,17 @@ export function lift(
   }
   out(`Opened ${pr.html_url}.\n`);
   try {
-    github.gh(['pr', 'merge', pr.html_url, '--auto', '--squash']);
+    enableAutoMerge(pr.html_url);
   } catch (error) {
     // The PR exists either way; the email for the failure should link it.
     error.prUrl = pr.html_url;
     throw error;
   }
-  out('Enabled squash auto-merge.\n');
   return {
     opened: true,
     prUrl: pr.html_url,
     packages,
-    summary: summarize(packages),
+    summary: withNote(summarize(removal.removed), autoMerge.note),
     removed: removal.removed,
     malformed: removal.malformed,
     conditionTests,
@@ -336,8 +470,14 @@ export function lift(
 }
 
 /** The result as the `$GITHUB_OUTPUT` keys the lift contract names. */
-export function toOutputs({ opened, prUrl, packages, summary }) {
-  return { opened: opened ? 'true' : 'false', pr_url: prUrl, packages: packages.join(','), summary: oneLine(summary) };
+export function toOutputs({ opened, blocked = false, prUrl, packages, summary }) {
+  return {
+    opened: opened ? 'true' : 'false',
+    blocked: blocked ? 'true' : 'false',
+    pr_url: prUrl,
+    packages: packages.join(','),
+    summary: oneLine(summary),
+  };
 }
 
 /** @param {string[]} argv */

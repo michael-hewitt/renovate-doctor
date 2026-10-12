@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { formatPrBody, lift, liftMarker, main, parseArgs, toOutputs } from '../scripts/lift.mjs';
+import { formatPrBody, lift, liftMarker, main, parseArgs, prTitle, summarize, toOutputs } from '../scripts/lift.mjs';
 
 // The lift runs against a real git repository cloned from a bare `origin`, so its branch, commit, push and
 // dry-run restore are the real thing; only GitHub is faked. renovate_holds.json has two expired holds
@@ -21,7 +21,18 @@ const repository = 'crescendosw/webapp';
 const today = '2026-10-12';
 const branch = 'renovate-doctor/lift-2026-10-12';
 const prUrl = 'https://github.com/crescendosw/webapp/pull/3901';
-const openPrsRoute = `repos/${repository}/pulls?head=crescendosw%3Arenovate-doctor%2Flift-2026-10-12&state=open&per_page=100`;
+const openPrsRoute = `repos/${repository}/pulls?state=open&per_page=100`;
+const branchPrsRoute = `repos/${repository}/pulls?head=crescendosw%3Arenovate-doctor%2Flift-2026-10-12&state=open&per_page=100`;
+const protectionRoute = `repos/${repository}/branches/main/protection/required_status_checks`;
+const rulesRoute = `repos/${repository}/rules/branches/main`;
+const requiredChecks = { strict: true, contexts: ['Node.js CI'], checks: [{ context: 'Node.js CI', app_id: 15368 }] };
+
+/** An error as `gh api` raises it for an HTTP failure. */
+function ghError(status, message) {
+  return () => {
+    throw Object.assign(new Error(`Command failed: gh api`), { stderr: `gh: ${message} (HTTP ${status})\n` });
+  };
+}
 const holdTestPath = 'client/src/util/test/pwa_assets_generator_hold.test.ts';
 
 // Git with no global or system config, so the identity fallback is tested on every machine alike.
@@ -81,12 +92,16 @@ function capture() {
   return { out: (line) => lines.push(line), text: () => lines.join('') };
 }
 
-const githubForNewPr = () =>
+const githubForNewPr = (overrides = {}) =>
   fakeGithub({
     [openPrsRoute]: [],
     [`repos/${repository}`]: { default_branch: 'main' },
+    [protectionRoute]: requiredChecks,
     [`repos/${repository}/pulls`]: { number: 3901, html_url: prUrl },
+    ...overrides,
   });
+
+const lifted3 = 'lifted 2 expired holds: @vite-pwa/assets-generator, typescript, @typescript/native-preview';
 
 describe('lift', () => {
   it('does nothing when nothing has expired', () => {
@@ -99,7 +114,13 @@ describe('lift', () => {
     expect(github.calls).toEqual([]);
     expect(output.text()).toContain('nothing expired in renovate.json on 2026-10-12');
     expect(git(work, ['branch', '--list']).trim()).toBe('* main');
-    expect(toOutputs(result)).toEqual({ opened: 'false', pr_url: '', packages: '', summary: 'nothing expired' });
+    expect(toOutputs(result)).toEqual({
+      opened: 'false',
+      blocked: 'false',
+      pr_url: '',
+      packages: '',
+      summary: 'nothing expired',
+    });
   });
 
   it('annotates the run with the malformed markers even when nothing expired', () => {
@@ -124,13 +145,14 @@ describe('lift', () => {
       prUrl,
       packages,
       conditionTests: [holdTestPath],
-      summary: 'lifted 3 expired holds: @vite-pwa/assets-generator, typescript, @typescript/native-preview',
+      summary: lifted3,
     });
     expect(toOutputs(result)).toEqual({
       opened: 'true',
+      blocked: 'false',
       pr_url: prUrl,
       packages: '@vite-pwa/assets-generator,typescript,@typescript/native-preview',
-      summary: 'lifted 3 expired holds: @vite-pwa/assets-generator, typescript, @typescript/native-preview',
+      summary: lifted3,
     });
 
     // The commit is on the pushed branch, from main, with the config trimmed and the hold test gone.
@@ -183,12 +205,15 @@ describe('lift', () => {
 
   it('reuses an open PR already on the branch instead of pushing again', () => {
     const { origin, work } = makeRepo();
-    const github = fakeGithub({ [openPrsRoute]: [{ number: 3899, html_url: 'https://github.com/x/y/pull/3899' }] });
+    const existing = { number: 3899, html_url: 'https://github.com/x/y/pull/3899', head: { ref: branch } };
+    const github = githubForNewPr({ [openPrsRoute]: [{ ...existing, body: liftMarker }] });
     const result = lift({ today, repository, cwd: work }, { github, exec, out: () => {} });
 
     expect(result).toMatchObject({ opened: true, prUrl: 'https://github.com/x/y/pull/3899', reused: true });
     expect(github.calls.map((call) => call.route ?? call.gh.join(' '))).toEqual([
+      `repos/${repository}`,
       openPrsRoute,
+      protectionRoute,
       'pr merge https://github.com/x/y/pull/3899 --auto --squash',
     ]);
     expect(git(origin, ['branch', '--list']).trim()).toBe('* main');
@@ -197,10 +222,11 @@ describe('lift', () => {
 
   it('takes the PR found on the branch when creating it failed after GitHub had made it', () => {
     const { work } = makeRepo();
-    let lookups = 0;
     const github = fakeGithub({
-      [openPrsRoute]: () => (lookups++ === 0 ? [] : [{ number: 3901, html_url: prUrl }]),
+      [openPrsRoute]: [],
+      [branchPrsRoute]: [{ number: 3901, html_url: prUrl }],
       [`repos/${repository}`]: { default_branch: 'main' },
+      [protectionRoute]: requiredChecks,
       [`repos/${repository}/pulls`]: () => {
         throw new Error('gh: Validation Failed: A pull request already exists (HTTP 422)');
       },
@@ -208,6 +234,79 @@ describe('lift', () => {
     const result = lift({ today, repository, cwd: work }, { github, exec, out: () => {} });
     expect(result).toMatchObject({ opened: true, prUrl });
     expect(github.calls.at(-1)).toEqual({ gh: ['pr', 'merge', prUrl, '--auto', '--squash'] });
+  });
+
+  it('lifts nothing while an earlier lift PR is still open, and says so', () => {
+    const { origin, work } = makeRepo();
+    const earlier = {
+      number: 3880,
+      html_url: 'https://github.com/crescendosw/webapp/pull/3880',
+      head: { ref: 'renovate-doctor/lift-2026-09-12' },
+      body: `Lifted holds:\n- eslint (held until 2026-09-01): retry\n\n${liftMarker}\n`,
+    };
+    const unrelated = { number: 3886, html_url: 'https://x/3886', head: { ref: 'renovate/x' }, body: 'Renovate' };
+    const github = githubForNewPr({ [openPrsRoute]: [unrelated, earlier] });
+    const result = lift({ today, repository, cwd: work }, { github, exec, out: () => {} });
+
+    expect(toOutputs(result)).toEqual({
+      opened: 'false',
+      blocked: 'true',
+      pr_url: earlier.html_url,
+      packages: '@vite-pwa/assets-generator,typescript,@typescript/native-preview',
+      summary: `previous lift PR still open: ${earlier.html_url}`,
+    });
+    expect(github.calls.map((call) => call.route ?? call.gh.join(' '))).toEqual([`repos/${repository}`, openPrsRoute]);
+    expect(git(origin, ['branch', '--list']).trim()).toBe('* main');
+    expect(git(work, ['status', '--porcelain'])).toBe('');
+  });
+
+  it('replaces its own branch left on the remote by an earlier run today that opened no PR', () => {
+    const { origin, work } = makeRepo();
+    git(work, ['-c', 'user.name=M', '-c', 'user.email=m@example.com', 'commit', '-q', '--allow-empty', '-m', 'stale']);
+    git(work, ['push', '-q', 'origin', `HEAD:refs/heads/${branch}`]);
+    git(work, ['reset', '-q', '--hard', 'origin/main']);
+    const output = capture();
+    const result = lift({ today, repository, cwd: work }, { github: githubForNewPr(), exec, out: output.out });
+
+    expect(result).toMatchObject({ opened: true, prUrl });
+    expect(output.text()).toContain('is on the remote from an earlier run with no open PR; deleting it first');
+    expect(git(origin, ['log', '-1', '--format=%s', `${branch}~1`]).trim()).toBe('initial');
+  });
+
+  describe('auto-merge and the required checks', () => {
+    const autoMergeCalls = (github) => github.calls.filter((call) => call.gh?.[0] === 'pr');
+
+    it('enables auto-merge when a ruleset requires checks and branch protection is absent', () => {
+      const github = githubForNewPr({
+        [protectionRoute]: ghError(404, 'Branch not protected'),
+        [rulesRoute]: [{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'CI' }] } }],
+      });
+      const result = lift({ today, repository, cwd: makeRepo().work }, { github, exec, out: () => {} });
+      expect(autoMergeCalls(github)).toEqual([{ gh: ['pr', 'merge', prUrl, '--auto', '--squash'] }]);
+      expect(result.summary).toBe(lifted3);
+    });
+
+    it('leaves auto-merge off, and says so, when the default branch requires no checks', () => {
+      const github = githubForNewPr({ [protectionRoute]: ghError(404, 'Branch not protected'), [rulesRoute]: [] });
+      const result = lift({ today, repository, cwd: makeRepo().work }, { github, exec, out: () => {} });
+      expect(autoMergeCalls(github)).toEqual([]);
+      expect(result).toMatchObject({ opened: true, prUrl });
+      expect(result.summary).toBe(
+        `${lifted3}; auto-merge was not enabled because the default branch requires no checks`,
+      );
+      const create = github.calls.find((call) => call.method === 'POST');
+      expect(create.body.body).toContain('Auto-merge was not enabled: the default branch requires no status checks');
+    });
+
+    it('enables auto-merge with a note when the protection cannot be read', () => {
+      const github = githubForNewPr({ [protectionRoute]: ghError(403, 'Resource not accessible by integration') });
+      const result = lift({ today, repository, cwd: makeRepo().work }, { github, exec, out: () => {} });
+      expect(autoMergeCalls(github)).toHaveLength(1);
+      expect(result.summary).toBe(
+        `${lifted3}; auto-merge was enabled, but the default branch's protection could not be read ` +
+          '(branch protection: gh: Resource not accessible by integration (HTTP 403))',
+      );
+    });
   });
 
   it('prints the diff and the PR body in a dry run, calls nothing on GitHub and restores the tree', () => {
@@ -221,7 +320,7 @@ describe('lift', () => {
       opened: false,
       prUrl: '',
       summary:
-        'dry run: would lift 3 expired holds: @vite-pwa/assets-generator, typescript, @typescript/native-preview',
+        'dry run: would lift 2 expired holds: @vite-pwa/assets-generator, typescript, @typescript/native-preview',
     });
     const printed = output.text();
     expect(printed).toContain(`diff --git a/${holdTestPath} b/${holdTestPath}\ndeleted file mode`);
@@ -234,6 +333,24 @@ describe('lift', () => {
     expect(fs.readFileSync(path.join(work, holdTestPath), 'utf8')).toBe(holdTest);
     expect(git(work, ['branch', '--list']).trim()).toBe('* main');
     expect(git(origin, ['branch', '--list']).trim()).toBe('* main');
+  });
+});
+
+describe('prTitle and summarize', () => {
+  it('name a rule that matches no package by name by its position and description, and count holds', () => {
+    const removed = [
+      { packages: ['a', 'b'], date: '2026-01-01', description: 'remove after 2026-01-01: retry', index: 0 },
+      {
+        packages: [],
+        date: '2026-01-01',
+        description: 'Internal packages wait for the v3 API. remove after 2026-01-01: retry',
+        index: 5,
+      },
+    ];
+    expect(prTitle(removed)).toBe(
+      'chore(deps): lift expired Renovate holds (a, b, rule 5: Internal packages wait for the v3 API. r)',
+    );
+    expect(summarize(removed)).toBe('lifted 2 expired holds: a, b, rule 5: Internal packages wait for the v3 API. r');
   });
 });
 
@@ -281,8 +398,8 @@ describe('main', () => {
     });
     expect(code).toBe(0);
     expect(fs.readFileSync(outputFile, 'utf8')).toBe(
-      'opened=false\npr_url=\npackages=@vite-pwa/assets-generator,typescript,@typescript/native-preview\n' +
-        'summary=dry run: would lift 3 expired holds: @vite-pwa/assets-generator, typescript, @typescript/native-preview\n',
+      'opened=false\nblocked=false\npr_url=\npackages=@vite-pwa/assets-generator,typescript,@typescript/native-preview\n' +
+        'summary=dry run: would lift 2 expired holds: @vite-pwa/assets-generator, typescript, @typescript/native-preview\n',
     );
     expect(git(work, ['status', '--porcelain'])).toBe('');
   });
@@ -301,7 +418,7 @@ describe('main', () => {
     });
     expect(code).toBe(1);
     expect(fs.readFileSync(outputFile, 'utf8')).toBe(
-      'opened=false\npr_url=\npackages=\nsummary=lift failed: --today must be a YYYY-MM-DD date, not 2026-10-32\n',
+      'opened=false\nblocked=false\npr_url=\npackages=\nsummary=lift failed: --today must be a YYYY-MM-DD date, not 2026-10-32\n',
     );
     expect(errors.text()).toContain('renovate-doctor lift error');
   });
@@ -327,9 +444,10 @@ describe('main', () => {
       code: 0,
       result: {
         opened: 'true',
+        blocked: 'false',
         pr_url: prUrl,
         packages: '@vite-pwa/assets-generator,typescript,@typescript/native-preview',
-        summary: 'lifted 3 expired holds: @vite-pwa/assets-generator, typescript, @typescript/native-preview',
+        summary: lifted3,
         exit_code: 0,
       },
     });
@@ -337,6 +455,7 @@ describe('main', () => {
       code: 1,
       result: {
         opened: 'false',
+        blocked: 'false',
         pr_url: '',
         packages: '',
         summary: 'lift failed: --today must be a YYYY-MM-DD date, not tomorrow',

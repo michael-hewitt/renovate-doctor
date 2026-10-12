@@ -7,14 +7,15 @@
 // escalated, a run that failed, an agent that wrote no or a malformed outcome file) is one plain-text
 // email through Mandrill. When the gate produced the outcome no agent ran: for fix attempts exhausted
 // (`escalated`) this step also posts the PR comment, with the sha marker, on the gate's behalf; for a
-// gate error (`failed`) it only emails. In lift mode it emails when a config PR was opened or the lift failed, and is silent when
+// gate error (`failed`) it only emails. In lift mode it emails when a config PR was opened, when the lift
+// was blocked by an earlier lift PR that is still open, and when the lift failed; it is silent when
 // nothing had expired.
 //
 // Environment: REPORT_MODE (`triage`/`lift`), OUTCOME_FILE, AGENT_OUTCOME (the agent step's outcome:
 // `success`/`failure`/`cancelled`/`skipped`), GATE_OUTCOME, GATE_SUMMARY, GATE_REASON, DRY_RUN
 // (`true`/`false`), PR_NUMBER, PR_URL, PR_TITLE, HEAD_SHA, RUN_URL, GITHUB_REPOSITORY, GH_TOKEN (read by
 // `gh`), EMAIL_TO, EMAIL_FROM, EMAIL_FROM_NAME, MANDRILL_API_KEY; for lift mode LIFT_OUTCOME
-// (`opened`/`nothing`/`failure`), LIFT_PR_URL, LIFT_SUMMARY.
+// (`opened`/`nothing`/`blocked`/`failure`), LIFT_PR_URL, LIFT_SUMMARY.
 //
 // Exit status: non-zero when an email was due and was not sent (refused by Mandrill, or the mail settings
 // are missing), and when REPORT_MODE is not one this script knows. The email is what a non-merged run
@@ -188,10 +189,11 @@ function composeTriage(input) {
   return message;
 }
 
-const liftOutcomes = ['opened', 'nothing', 'failure'];
+const liftOutcomes = ['opened', 'nothing', 'blocked', 'failure'];
 
 /**
- * Lift mode's decision: an email for an opened config PR or a failure, silence when nothing had expired.
+ * Lift mode's decision: an email for an opened config PR, a lift blocked by an open one, or a failure;
+ * silence when nothing had expired.
  * An outcome this script does not know is treated as a failure, so a broken lift job is never silent.
  *
  * @param {ReportInput} input
@@ -200,6 +202,7 @@ export function resolveLift({ lift = {} }) {
   const outcome = lift.outcome ?? '';
   if (outcome === 'nothing') return { email: false, why: 'lift: nothing had expired' };
   if (outcome === 'opened') return { email: true, why: `lift: opened ${lift.prUrl || 'a config PR'}` };
+  if (outcome === 'blocked') return { email: true, why: `lift: blocked by ${lift.prUrl || 'an open lift PR'}` };
   if (outcome === 'failure') return { email: true, why: 'lift: the lift failed' };
   return {
     email: true,
@@ -217,6 +220,24 @@ function composeLift(input) {
     return {
       subject: `${subjectPrefix} lift: ${firstLine(summary)}`,
       text: [summary, '', `PR: ${linkOrUnknown(lift.prUrl, 'PR URL')}`, run, ...footer].join('\n'),
+    };
+  }
+  if (lift.outcome === 'blocked') {
+    // An unmerged lift PR keeps every later lift from running, so it needs a person even though nothing
+    // failed: a month of silence would hide it.
+    const summary = lift.summary?.trim() || 'the previous lift PR is still open';
+    return {
+      subject: `${subjectPrefix} lift blocked`,
+      text: [
+        `lift blocked: ${summary}`,
+        '',
+        'Nothing was lifted this run. Merge or close the open lift PR; the next lift run then lifts every hold ' +
+          'that has expired by then.',
+        '',
+        ...(lift.prUrl ? [`PR: ${lift.prUrl}`] : []),
+        run,
+        ...footer,
+      ].join('\n'),
     };
   }
   let summary = lift.summary?.trim() || 'The lift run failed; the run log says where.';
