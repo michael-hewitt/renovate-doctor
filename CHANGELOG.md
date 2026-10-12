@@ -4,6 +4,14 @@ Callers pin a tag (`uses: michael-hewitt/renovate-doctor/.github/workflows/renov
 workflow checks out its scripts and skill at that tag's commit, so a caller runs exactly the version it pinned
 until it moves the pin. Every change a caller could notice gets a new tag and an entry here.
 
+## v0.1.4 - 2026-10-12
+
+- The agent reads Actions runs and the PR's checks with the job's token (`RENOVATE_DOCTOR_ACTIONS_TOKEN`):
+  the Claude App token cannot (403 "Resource not accessible by integration" on `gh run list`, `gh pr checks`
+  and `statusCheckRollup`, seen in the first caller's dry run against a live failure). **Callers must grant
+  `checks: read` and `statuses: read`** on the job alongside the existing permissions; the README caller
+  shows them. In a dry run those reads fail, as the token is withheld there, and the agent says so.
+
 ## v0.1.3 - 2026-10-12
 
 - New `model` input, default `claude-opus-5-5`, passed to claude-code-action as `--model` for the triage and

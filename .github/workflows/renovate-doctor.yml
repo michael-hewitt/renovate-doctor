@@ -116,13 +116,17 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: ${{ inputs.timeout_minutes }}
     # The caller grants these; a called job cannot have more than its caller gave. `actions: write` lets the
-    # agent rerun failed jobs, and `id-token: write` lets claude-code-action exchange the job's OIDC token
-    # for the Claude GitHub App token that the agent pushes, comments and merges with.
+    # agent rerun failed jobs, `checks: read` and `statuses: read` let it read the PR's checks (the Claude App
+    # token cannot read runs or checks, so the agent reads them with this job's token), and `id-token: write`
+    # lets claude-code-action exchange the job's OIDC token for the Claude GitHub App token that the agent
+    # pushes, comments and merges with.
     permissions:
       contents: write
       pull-requests: write
       issues: write
       actions: write
+      checks: read
+      statuses: read
       id-token: write
     env:
       # The commands a dry run refuses, as Claude Code permission rules: every write to GitHub the skill
@@ -348,7 +352,7 @@ jobs:
             - Rerun workflow: ${{ inputs.rerun_workflow || 'none' }}
             - Gate: ${{ steps.gate.outputs.reason }}${{ inputs.dry_run && format(' (dry-run verdict: {0})', steps.gate.outputs.verdict) || '' }}
 
-            ${{ inputs.dry_run && format('This is a dry run, and the harness refuses these commands: {0}. A refusal is expected; note what you would have done and carry on.', env.RENOVATE_DOCTOR_DRY_RUN_REFUSED) || 'To rerun failed jobs, use the workflow''s own token, which may rerun them where the default one may not: `GH_TOKEN="$RENOVATE_DOCTOR_ACTIONS_TOKEN" gh run rerun <run_id> --failed`. Use your default credentials for everything else.' }}
+            ${{ inputs.dry_run && format('This is a dry run, and the harness refuses these commands: {0}. A refusal is expected; note what you would have done and carry on.', env.RENOVATE_DOCTOR_DRY_RUN_REFUSED) || 'Your default token cannot read Actions runs or checks or rerun jobs: for those use the workflow''s own token, `GH_TOKEN="$RENOVATE_DOCTOR_ACTIONS_TOKEN" gh run list ...`, `... gh run view ...`, `... gh pr checks <n>`, `... gh run rerun <run_id> --failed`. Use your default credentials for everything else, every write included.' }}
           # The tools the skill needs; Bash is not allowed by default, and the skill needs git, gh, node and
           # the package manager. No --max-turns: reproducing a failure takes as many turns as it takes, and
           # the job's timeout is the limit. In a dry run every write to GitHub is denied as well (deny rules

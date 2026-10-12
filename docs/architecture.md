@@ -89,7 +89,10 @@ for callers in the same organisation, and this repository is not in the caller's
 (required), `MANDRILL_API_KEY` (required). Only the report job sees `MANDRILL_API_KEY`.
 
 Permissions the caller grants: `contents: write`, `pull-requests: write`, `issues: write`, `actions: write`
-(to rerun jobs), `id-token: write` (claude-code-action). Concurrency is the caller's: one group per Renovate
+(to rerun jobs, and to read runs), `checks: read` and `statuses: read` (the PR's checks), `id-token: write`
+(claude-code-action). The Claude App token the agent gets from claude-code-action cannot read Actions runs or
+checks (403 "Resource not accessible by integration", seen in the first caller's dry run), so the skill
+reads them with `RENOVATE_DOCTOR_ACTIONS_TOKEN`, the job's token, and writes with the App token. Concurrency is the caller's: one group per Renovate
 branch, **queued, not cancelled** - a run that arrives after Renovate rebased is dropped by the gate (head
 moved) rather than by cancelling an agent mid-work, and GitHub keeps at most one pending run per group.
 
