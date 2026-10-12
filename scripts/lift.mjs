@@ -55,6 +55,10 @@ const fallbackIdentity = { name: 'renovate-doctor[bot]', email: 'noreply@github.
  * @typedef {import('../lib/renovate_config.mjs').RemovedRule} RemovedRule
  * @typedef {import('../lib/renovate_config.mjs').MalformedMarker} MalformedMarker
  * @typedef {(file: string, args: string[], options: { cwd?: string }) => string} Exec
+ * @typedef {import('../lib/github.mjs').Github} Github
+ * @typedef {import('../lib/github.mjs').PullRequest} PullRequest
+ * @typedef {{ required: boolean | undefined, reason?: string }} RequiredChecks
+ * @typedef {{ enable: boolean, note: string, paragraph: string }} AutoMergePlan
  *
  * @typedef {{
  *   opened: boolean,
@@ -67,6 +71,10 @@ const fallbackIdentity = { name: 'renovate-doctor[bot]', email: 'noreply@github.
  *   reused?: boolean,
  *   blocked?: boolean,
  * }} LiftResult
+ *   What `lift` did; `toOutputs` turns it into the lift contract's outputs (and `lift.json`).
+ *
+ * @typedef {Pick<LiftResult, 'opened' | 'prUrl' | 'packages' | 'summary'> & Partial<LiftResult>} LiftOutputSource
+ *   A `LiftResult`, or the shorter one `main` builds when the lift threw.
  */
 
 /** @type {Exec} */
@@ -79,20 +87,29 @@ function defaultExec(file, args, { cwd } = {}) {
   });
 }
 
-/** Blocks the thread between push attempts; the script is synchronous on purpose, as gate.mjs is. */
+/** @type {import('../lib/github.mjs').Sleep} Blocks the thread between push attempts; the script is synchronous, as gate.mjs is. */
 function defaultSleep(milliseconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
+/** @param {unknown} text */
 function oneLine(text) {
   return `${text ?? ''}`.replace(/\s*\n\s*/g, ' ').trim();
 }
 
+/**
+ * @param {number} count
+ * @param {string} word
+ */
 function plural(count, word) {
   return `${count} ${word}${count === 1 ? '' : 's'}`;
 }
 
-/** The packages of the removed holds, each once, in config order. */
+/**
+ * The packages of the removed holds, each once, in config order.
+ *
+ * @param {RemovedRule[]} removed
+ */
 export function liftedPackages(removed) {
   return [...new Set(removed.flatMap((rule) => rule.packages))];
 }
@@ -110,21 +127,32 @@ export function holdNames(rule) {
   return [`rule ${rule.index}${about ? `: ${about}` : ''}`];
 }
 
+/** @param {RemovedRule[]} removed */
 function holdLabels(removed) {
   return [...new Set(removed.flatMap(holdNames))];
 }
 
-/** The PR title, which is also the commit message. */
+/**
+ * The PR title, which is also the commit message.
+ *
+ * @param {RemovedRule[]} removed
+ */
 export function prTitle(removed) {
   return `chore(deps): lift expired Renovate holds (${holdLabels(removed).join(', ')})`;
 }
 
-/** The one-line summary for the email subject; it counts holds (rules), not packages. */
+/**
+ * The one-line summary for the email subject; it counts holds (rules), not packages.
+ *
+ * @param {RemovedRule[]} removed
+ * @param {{ dryRun?: boolean }} [options]
+ */
 export function summarize(removed, { dryRun = false } = {}) {
   const what = `${plural(removed.length, 'expired hold')}: ${holdLabels(removed).join(', ')}`;
   return dryRun ? `dry run: would lift ${what}` : `lifted ${what}`;
 }
 
+/** @param {any} error */
 function httpStatus(error) {
   const status = /\(HTTP (\d{3})\)/.exec(`${error?.stderr ?? ''}\n${error?.message ?? ''}`)?.[1];
   return status ? Number(status) : undefined;
@@ -135,9 +163,17 @@ function httpStatus(error) {
  * nothing (404, or no checks), from the rulesets that apply to the branch. `required` is undefined when
  * GitHub would not say (a token without admin rights gets 403 on branch protection), with the reason.
  *
- * @returns {{ required: boolean | undefined, reason?: string }}
+ * @param {Pick<Github, 'ghApi'>} github
+ * @param {string} repository
+ * @param {string} branch
+ * @returns {RequiredChecks}
  */
 export function readRequiredChecks(github, repository, branch) {
+  /**
+   * @param {string} where
+   * @param {any} error
+   * @returns {RequiredChecks}
+   */
   const unreadable = (where, error) => ({
     required: undefined,
     reason: `${where}: ${oneLine(error?.stderr || error?.message || error)}`,
@@ -151,7 +187,8 @@ export function readRequiredChecks(github, repository, branch) {
   try {
     const rules = github.ghApi(`repos/${repository}/rules/branches/${branch}`) ?? [];
     const required = rules.some(
-      (rule) => rule.type === 'required_status_checks' && rule.parameters?.required_status_checks?.length > 0,
+      (/** @type {{ type?: string, parameters?: any }} */ rule) =>
+        rule.type === 'required_status_checks' && rule.parameters?.required_status_checks?.length > 0,
     );
     return { required };
   } catch (error) {
@@ -165,6 +202,9 @@ export function readRequiredChecks(github, repository, branch) {
  * off when none are, because `gh pr merge --auto` would then merge before CI has run; enable it, with a
  * note, when the protection could not be read, since a project that adopted renovate-doctor is told to
  * require its checks. `note` goes into the summary; `paragraph` into the PR body.
+ *
+ * @param {RequiredChecks} checks
+ * @returns {AutoMergePlan}
  */
 function planAutoMerge(checks) {
   if (checks.required === true) return { enable: true, note: '', paragraph: '' };
@@ -186,6 +226,10 @@ function planAutoMerge(checks) {
   };
 }
 
+/**
+ * @param {string} summary
+ * @param {string} note
+ */
 function withNote(summary, note) {
   return note ? `${summary}; ${note}` : summary;
 }
@@ -230,25 +274,42 @@ export function formatPrBody({ removed, malformed, conditionTests, configPath, a
   return lines.join('\n');
 }
 
-/** Whether a PR's head branch lives in this repository rather than in a fork. */
+/**
+ * Whether a PR's head branch lives in this repository rather than in a fork.
+ *
+ * @param {PullRequest} pr
+ * @param {string} repository
+ */
 function isOwnBranch(pr, repository) {
   return pr.head?.repo?.full_name === repository;
 }
 
+/**
+ * @param {Github} github
+ * @param {string} repository
+ * @param {string} branch
+ * @returns {PullRequest | undefined}
+ */
 function findOpenPr(github, repository, branch) {
   const owner = repository.split('/')[0];
   const head = encodeURIComponent(`${owner}:${branch}`);
   return github
     .ghApi(`repos/${repository}/pulls?head=${head}&state=open&per_page=100`)
-    .find((pr) => isOwnBranch(pr, repository));
+    .find((/** @type {PullRequest} */ pr) => isOwnBranch(pr, repository));
 }
 
 // A push the remote rejected (a non-fast-forward, a protected branch) gets the same answer every time, so
 // only the other failures (a stalled network, a 5xx) are retried.
+/** @param {any} error */
 function isRejection(error) {
   return /\[rejected\]|\[remote rejected\]|non-fast-forward|protected branch/i.test(`${error?.stderr ?? ''}`);
 }
 
+/**
+ * @param {(args: string[]) => string} git
+ * @param {string} branch
+ * @param {{ sleep: (milliseconds: number) => void, tries?: number, pauseMs?: number }} options
+ */
 function pushWithRetries(git, branch, { sleep, tries = 4, pauseMs = 10_000 }) {
   for (let i = 1; ; i += 1) {
     try {
@@ -273,9 +334,12 @@ function pushWithRetries(git, branch, { sleep, tries = 4, pauseMs = 10_000 }) {
  *   cwd?: string,
  * }} input `defaultBranch` is looked up on GitHub when not given.
  * @param {{
- *   github: { ghApi: Function, gh: Function },
+ *   github: Github,
  *   exec?: Exec,
- *   fs?: { readFileSync: Function, writeFileSync: Function },
+ *   fs?: {
+ *     readFileSync: (file: string, encoding: 'utf8') => string,
+ *     writeFileSync: (file: string, text: string) => void,
+ *   },
  *   gitGrep?: (args: string[]) => string[],
  *   sleep?: (milliseconds: number) => void,
  *   out?: (text: string) => void,
@@ -297,11 +361,11 @@ export function lift(
   if (!dryRun && (!repository || !repository.includes('/'))) {
     throw new Error(`GITHUB_REPOSITORY is not owner/repo: ${repository}`);
   }
-  const git = (args) => exec('git', args, { cwd });
+  const git = (/** @type {string[]} */ args) => exec('git', args, { cwd });
   const configFile = path.join(cwd, configPath);
   const heading = `renovate-doctor lift${dryRun ? ' (dry run)' : ''}`;
 
-  const describeMalformed = (malformed) => {
+  const describeMalformed = (/** @type {MalformedMarker[]} */ malformed) => {
     if (!malformed.length) return;
     // A workflow-command annotation shows on the run's summary page, so a malformed marker is seen even
     // in a month when nothing expired and no email goes out.
@@ -330,8 +394,9 @@ export function lift(
   }
 
   const branch = `renovate-doctor/lift-${today}`;
+  /** @type {AutoMergePlan} */
   let autoMerge = { enable: true, note: '', paragraph: '' };
-  const enableAutoMerge = (url) => {
+  const enableAutoMerge = (/** @type {string} */ url) => {
     if (!autoMerge.enable) {
       out(`Auto-merge not enabled on ${url}: the default branch requires no checks.\n`);
       return;
@@ -342,6 +407,7 @@ export function lift(
   if (!dryRun) {
     const base = defaultBranch || github.ghApi(`repos/${repository}`).default_branch;
     defaultBranch = base;
+    /** @type {PullRequest[]} */
     const openPrs = github.ghApi(`repos/${repository}/pulls?state=open&per_page=100`, { paginate: true });
     const ownPrs = openPrs.filter((pr) => isOwnBranch(pr, repository));
     const sameBranch = ownPrs.find((pr) => pr.head.ref === branch);
@@ -451,12 +517,15 @@ export function lift(
   pushWithRetries(git, branch, { sleep });
   out(`Pushed ${branch}.\n`);
 
+  /** @type {PullRequest | undefined} */
   let pr;
   try {
-    pr = github.ghApi(`repos/${repository}/pulls`, {
-      method: 'POST',
-      body: { title, head: branch, base: defaultBranch, body },
-    });
+    pr = /** @type {PullRequest} */ (
+      github.ghApi(`repos/${repository}/pulls`, {
+        method: 'POST',
+        body: { title, head: branch, base: defaultBranch, body },
+      })
+    );
   } catch (error) {
     // The create may have succeeded with its answer lost (and a retry then refused as a duplicate), so an
     // open PR on the branch is the PR this run opened.
@@ -466,7 +535,7 @@ export function lift(
   out(`Opened ${pr.html_url}.\n`);
   try {
     enableAutoMerge(pr.html_url);
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     // The PR exists either way; the email for the failure should link it.
     error.prUrl = pr.html_url;
     throw error;
@@ -482,7 +551,11 @@ export function lift(
   };
 }
 
-/** The result as the `$GITHUB_OUTPUT` keys the lift contract names. */
+/**
+ * The result as the `$GITHUB_OUTPUT` keys the lift contract names.
+ *
+ * @param {LiftOutputSource} result
+ */
 export function toOutputs({ opened, blocked = false, prUrl, packages, removed = [], summary }) {
   return {
     opened: opened ? 'true' : 'false',
@@ -513,7 +586,7 @@ export function parseArgs(argv) {
  * @param {{
  *   argv?: string[],
  *   env?: NodeJS.ProcessEnv,
- *   github?: { ghApi: Function, gh: Function },
+ *   github?: Github,
  *   exec?: Exec,
  *   fs?: typeof nodeFs,
  *   gitGrep?: (args: string[]) => string[],
@@ -535,6 +608,7 @@ export function main({
   out = (text) => process.stdout.write(text),
   err = (text) => process.stderr.write(text),
 } = {}) {
+  /** @type {LiftOutputSource} */
   let result;
   let exitCode = 0;
   try {
@@ -549,7 +623,7 @@ export function main({
       },
       { github, exec, fs, gitGrep, out },
     );
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     err(`renovate-doctor lift error:\n${error?.stack ?? error}\n`);
     const reason = oneLine(error?.stderr || error?.message || error);
     // A PR opened before the failure (auto-merge refused, say) is still reported, so the email links it.
@@ -562,7 +636,7 @@ export function main({
   try {
     if (env.GITHUB_OUTPUT) fs.appendFileSync(env.GITHUB_OUTPUT, outputs);
     else out(`GITHUB_OUTPUT is not set; the outputs would be:\n${outputs}`);
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     err(`renovate-doctor lift could not write $GITHUB_OUTPUT:\n${error?.stack ?? error}\n`);
     exitCode = 1;
   }
@@ -573,7 +647,7 @@ export function main({
     try {
       fs.mkdirSync(path.dirname(resultFile), { recursive: true });
       fs.writeFileSync(resultFile, `${JSON.stringify({ ...toOutputs(result), exit_code: exitCode }, null, 2)}\n`);
-    } catch (error) {
+    } catch (/** @type {any} */ error) {
       err(`renovate-doctor lift could not write ${resultFile}:\n${error?.stack ?? error}\n`);
       exitCode = 1;
     }

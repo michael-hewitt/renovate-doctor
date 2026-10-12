@@ -6,6 +6,7 @@ import { matchNetworkSignature, networkSignature } from '../lib/network_signatur
 // real: crescendosw/webapp runs 37159829195 (pnpm unable to download itself), 37186036029 (a preview
 // teardown's Cloudflare call) and 37173840944 (a `gh api` call stalling). The others are in the exact
 // form the tool prints, for the signatures whose original logs GitHub no longer keeps.
+/** @type {Record<string, string[]>} */
 const networkLogs = {
   'pnpm self-install timing out': [
     '2026-10-04T00:50:30.1498973Z Switching pnpm from v11.19.0 to v12.8.2...',
@@ -49,6 +50,7 @@ const networkLogs = {
 
 // Failures in the code, which must be left to the agent: a real vitest assertion (webapp run
 // 37136304772) and a real `tsc` error from an update that changed a type (webapp run 37082755088).
+/** @type {Record<string, string[]>} */
 const codeLogs = {
   'a vitest assertion': [
     '2026-10-03T16:42:31.8555654Z  FAIL   client  src/pages/learn/solfege/test/sing_in_solfege_page.test.tsx > a session > "Back to Pitch" on the summary leaves for the Pitch class screen',

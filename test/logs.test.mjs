@@ -11,7 +11,7 @@ const fixtures = path.join(import.meta.dirname, 'fixtures');
 const repository = 'crescendosw/webapp';
 const runId = 37993773276;
 const jobsRoute = `repos/${repository}/actions/runs/${runId}/jobs?per_page=100`;
-const logRoute = (jobId) => `repos/${repository}/actions/jobs/${jobId}/logs`;
+const logRoute = (/** @type {number} */ jobId) => `repos/${repository}/actions/jobs/${jobId}/logs`;
 
 // The real jobs list of crescendosw/webapp run 37993773276 (vite-plugin-pwa v2 failing a hold test), and
 // the tail of its one failed job's log as GitHub serves it, byte-order mark included.
@@ -28,8 +28,9 @@ function notFound() {
 
 // The real adapter on a fake `gh`: `answers` maps an API route to its stdout, or to a function returning
 // it (or throwing, as `gh` does on an HTTP error).
+/** @param {Record<string, string | (() => string)>} answers */
 function fakeGithub(answers) {
-  const exec = vi.fn((_file, args) => {
+  const exec = vi.fn((/** @type {string} */ _file, /** @type {string[]} */ args) => {
     const answer = answers[args[1]];
     if (answer === undefined) throw new Error(`unexpected gh call: ${args.join(' ')}`);
     return typeof answer === 'function' ? answer() : answer;

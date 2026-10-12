@@ -76,13 +76,17 @@ export const defaultCommentAuthors = ['claude[bot]', 'github-actions[bot]'];
  * `rerun`), if any, and the comment recording a rerun of it, if any. A marker for `sha` in a comment by
  * anyone not in `authors` counts for nothing and is listed in `ignored`.
  *
- * @param {{ body?: string, html_url?: string, user?: { login?: string } }[]} comments
+ * @param {IssueComment[]} comments
  * @param {string} sha
  * @param {{ authors?: string[] }} [options]
+ * @returns {{ handled?: IssueComment, rerun?: IssueComment, ignored: IssueComment[] }}
  */
 export function readMarkers(comments, sha, { authors = defaultCommentAuthors } = {}) {
+  /** @type {IssueComment | undefined} */
   let handled;
+  /** @type {IssueComment | undefined} */
   let rerun;
+  /** @type {IssueComment[]} */
   const ignored = [];
   for (const comment of comments) {
     for (const [, markedSha, outcome] of `${comment.body ?? ''}`.matchAll(markerPattern)) {
@@ -99,6 +103,21 @@ export function readMarkers(comments, sha, { authors = defaultCommentAuthors } =
 }
 
 /**
+ * @typedef {{ body?: string, html_url?: string, user?: { login?: string } | null }} IssueComment
+ *   A PR comment as the issues API lists it, reduced to what the gate reads.
+ *
+ * @typedef {import('../lib/github.mjs').Github} Github
+ * @typedef {import('../lib/github.mjs').PullRequest} PullRequest
+ * @typedef {import('../lib/github.mjs').WorkflowRun} WorkflowRun
+ * @typedef {import('../lib/github.mjs').Commit} Commit
+ *
+ * @typedef {{
+ *   github: Github,
+ *   sleep?: (milliseconds: number) => void,
+ *   logWaitMs?: number,
+ *   logPauseMs?: number,
+ * }} GateDeps
+ *
  * @typedef {{
  *   eventName: string,
  *   event: any,
@@ -132,8 +151,10 @@ export function readMarkers(comments, sha, { authors = defaultCommentAuthors } =
  *   warnings: string[],
  *   error?: Error,
  * }} GateResult
+ *   Everything the gate decided; `toOutputs` turns it into the `$GITHUB_OUTPUT` keys of the gate contract.
  */
 
+/** @returns {GateResult} */
 function blankResult() {
   return {
     launch: false,
@@ -155,14 +176,20 @@ function blankResult() {
   };
 }
 
+/** @param {unknown} text */
 function oneLine(text) {
   return `${text}`.replace(/\s*\n\s*/g, ' ').trim();
 }
 
+/** @param {string | undefined} sha */
 function short(sha) {
   return `${sha ?? ''}`.slice(0, 7);
 }
 
+/**
+ * @param {number} count
+ * @param {string} word
+ */
 function plural(count, word) {
   return `${count} ${word}${count === 1 ? '' : 's'}`;
 }
@@ -173,12 +200,7 @@ function plural(count, word) {
  * carrying the error, with whatever had been resolved before it.
  *
  * @param {GateInput} input
- * @param {{
- *   github: { ghApi: Function, gh: Function },
- *   sleep?: (milliseconds: number) => void,
- *   logWaitMs?: number,
- *   logPauseMs?: number,
- * }} deps
+ * @param {GateDeps} deps
  * @returns {GateResult}
  */
 export function decide(input, deps) {
@@ -221,6 +243,12 @@ export function gateErrorResult(error, partial = {}) {
   };
 }
 
+/**
+ * @param {GateInput} input
+ * @param {GateDeps} deps
+ * @param {GateResult} result filled in as the conditions are evaluated, so a gate error keeps what was found
+ * @returns {GateResult}
+ */
 function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
   const {
     eventName,
@@ -236,24 +264,32 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
 
   /** @type {Map<number, string>} */
   const logCache = new Map();
+  /**
+   * @param {number} runId
+   * @returns {string}
+   */
   function logsOf(runId) {
     if (!logCache.has(runId)) {
       const text = fetchFailedLogs(runId, { github, repository, sleep, waitMs: logWaitMs, pauseMs: logPauseMs });
       logCache.set(runId, text);
     }
-    return logCache.get(runId);
+    return /** @type {string} */ (logCache.get(runId));
   }
 
   // Every failed run on a commit from this repository. The caller's own renovate-doctor workflow is left
   // out (a doctor run that failed is not a CI failure, and the agent must not be pointed at itself), and
   // so are runs from forks, whose logs and code are not the PR's.
+  /**
+   * @param {string} sha
+   * @returns {WorkflowRun[]}
+   */
   function failedRunsOn(sha) {
     const { workflow_runs: runs = [] } = github.ghApi(
       `repos/${repository}/actions/runs?head_sha=${sha}&status=failure&per_page=100`,
       { paginate: true },
     );
     return runs.filter(
-      (run) =>
+      (/** @type {WorkflowRun} */ run) =>
         run.conclusion === 'failure' &&
         run.head_repository?.full_name === repository &&
         !(ownWorkflowPath && run.path === ownWorkflowPath),
@@ -266,6 +302,10 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
   /**
    * Records a condition and says whether to carry on: past a pass, and in a dry run past a failure too,
    * except for the conditions a dry run enforces.
+   *
+   * @param {string} condition
+   * @param {boolean | undefined} pass undefined when the condition could not be evaluated
+   * @param {string} detail
    */
   function record(condition, pass, detail) {
     result.checks.push({ condition, result: pass === undefined ? 'unknown' : pass ? 'pass' : 'fail', detail });
@@ -284,6 +324,7 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
     }
     return result;
   }
+  /** @param {PullRequest} pr */
   function setPr(pr) {
     result.prNumber = pr.number;
     result.prUrl = pr.html_url;
@@ -292,42 +333,44 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
 
   // Resolve the failed run (the triggering one, or the one a manual run names) and, where the event
   // names it, the PR.
+  /** @type {WorkflowRun | undefined} */
   let run;
+  /** @type {PullRequest | undefined} */
   let pr;
-  /** @type {any[] | undefined} */
+  /** @type {WorkflowRun[]} */
   let failedRuns;
   if (eventName === 'workflow_run') {
     run = event?.workflow_run;
     if (!run) throw new Error('the workflow_run event payload has no workflow_run');
     result.headSha = run.head_sha;
-    result.headBranch = run.head_branch;
+    result.headBranch = run.head_branch ?? '';
     result.failedRunIds = [run.id];
   } else if (eventName === 'workflow_dispatch' || input.pr) {
     // A manual run: `workflow_dispatch`, or any other event that names a PR. The agent's action supports
     // only some events (not `push`), so in practice this is a dispatch.
     if (!input.pr) throw new Error('a manual run needs the pr input (the PR to triage)');
-    pr = github.ghApi(`repos/${repository}/pulls/${input.pr}`);
+    pr = /** @type {PullRequest} */ (github.ghApi(`repos/${repository}/pulls/${input.pr}`));
     setPr(pr);
     result.headBranch = pr.head.ref;
     if (input.runId) {
-      run = github.ghApi(`repos/${repository}/actions/runs/${input.runId}`);
+      run = /** @type {WorkflowRun} */ (github.ghApi(`repos/${repository}/actions/runs/${input.runId}`));
       failedRuns = run.conclusion === 'failure' ? [run] : [];
       result.headSha = run.head_sha;
     } else {
       failedRuns = failedRunsOn(pr.head.sha);
-      run = failedRuns[0];
+      run = /** @type {WorkflowRun | undefined} */ (failedRuns[0]);
       result.headSha = pr.head.sha;
     }
     result.failedRunIds = failedRuns.map((failed) => failed.id);
   } else {
     throw new Error(`renovate-doctor triages workflow_run and workflow_dispatch events, not ${eventName || 'none'}`);
   }
-  const branch = result.headBranch ?? '';
+  const branch = result.headBranch;
 
   // 1. failure
   const failed = run?.conclusion === 'failure';
   let failureDetail;
-  if (failed) failureDetail = `${run.name} run ${run.id} (attempt ${run.run_attempt}) concluded failure`;
+  if (run && failed) failureDetail = `${run.name} run ${run.id} (attempt ${run.run_attempt}) concluded failure`;
   else if (run) failureDetail = `${run.name} run ${run.id} concluded ${run.conclusion ?? 'nothing yet'}, not failure`;
   else failureDetail = `no run on ${short(result.headSha)} concluded failure`;
   if (!record('failure', failed, failureDetail)) return skip();
@@ -339,27 +382,35 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
   // PR to read it from.
   const runRepository = run?.head_repository?.full_name;
   const fromFork = Boolean(run) && runRepository !== repository;
-  const offBranch = eventName === 'workflow_dispatch' && Boolean(input.runId) && run.head_branch !== pr.head.ref;
+  // A dispatch with `runId` resolved both the run and the PR above.
+  const offBranch =
+    eventName === 'workflow_dispatch' &&
+    Boolean(input.runId) &&
+    /** @type {WorkflowRun} */ (run).head_branch !== /** @type {PullRequest} */ (pr).head.ref;
   const renovateBranch = branch.startsWith('renovate/');
-  /** @type {any[] | undefined} */
+  /** @type {PullRequest[] | undefined} */
   let openPrs;
   if (eventName === 'workflow_run' && ((renovateBranch && !fromFork) || dryRun)) {
     const head = encodeURIComponent(`${owner}:${branch}`);
-    openPrs = github.ghApi(`repos/${repository}/pulls?head=${head}&state=open&per_page=100`);
+    openPrs = /** @type {PullRequest[]} */ (
+      github.ghApi(`repos/${repository}/pulls?head=${head}&state=open&per_page=100`)
+    );
     if (openPrs.length === 1) pr = openPrs[0];
     else if (openPrs.length === 0 && dryRun) {
       // A rehearsal may target a branch whose PR has since closed or merged: the most recent one will do.
-      [pr] = github.ghApi(`repos/${repository}/pulls?head=${head}&state=all&per_page=100`);
+      [pr] = /** @type {PullRequest[]} */ (
+        github.ghApi(`repos/${repository}/pulls?head=${head}&state=all&per_page=100`)
+      );
     }
     if (pr) setPr(pr);
   }
   const author = pr?.user?.login;
   let renovatePass;
   let renovateDetail;
-  if (fromFork) {
+  if (fromFork && run) {
     renovatePass = false;
     renovateDetail = `run ${run.id} came from fork ${runRepository ?? '(unknown repository)'}`;
-  } else if (offBranch) {
+  } else if (offBranch && run && pr) {
     renovatePass = false;
     renovateDetail = `run ${run.id} is on ${run.head_branch || '(no branch)'}, not the PR's ${pr.head.ref}`;
   } else if (!renovateBranch) {
@@ -391,13 +442,15 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
       `the head moved: run ${run.id} ran on ${short(run.head_sha)} but PR #${pr.number} is at ${short(pr.head.sha)}`,
     );
   }
-  const openDetail = problems.length
-    ? problems.join('; ')
-    : `PR #${pr.number} is open at ${short(pr.head.sha)}, the failed run's head`;
+  const openDetail =
+    pr && !problems.length
+      ? `PR #${pr.number} is open at ${short(pr.head.sha)}, the failed run's head`
+      : problems.join('; ');
   if (!record('open', problems.length === 0, openDetail)) return skip();
 
   // 4. not handled
   if (pr) {
+    /** @type {IssueComment[]} */
     const comments = github.ghApi(`repos/${repository}/issues/${pr.number}/comments?per_page=100`, {
       paginate: true,
     });
@@ -444,8 +497,10 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
   }
 
   // 6. attempts
+  /** @type {Commit[] | undefined} */
   let fixCommits;
   if (pr) {
+    /** @type {Commit[]} */
     const commits = github.ghApi(`repos/${repository}/pulls/${pr.number}/commits?per_page=100`, { paginate: true });
     // A commit whose author GitHub could not match to an account (author null) is not Renovate's.
     fixCommits = commits.filter((commit) => commit.author?.login !== renovateBot);
@@ -461,26 +516,33 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
   }
   const exhausted = fixCommits !== undefined && fixCommits.length >= maxAttempts;
 
-  // Outside a dry run the gate gets here only when every condition up to attempts held.
+  // Outside a dry run the gate gets here only when every condition up to attempts held, so the run and
+  // the PR were both resolved; and the commits were counted, or nothing would be exhausted.
   if (!dryRun && exhausted) {
     result.launch = false;
     result.reason = firstFailure;
     result.outcome = 'escalated';
-    result.summary = escalationSummary(pr, run, fixCommits);
+    result.summary = escalationSummary(
+      /** @type {PullRequest} */ (pr),
+      /** @type {WorkflowRun} */ (run),
+      /** @type {Commit[]} */ (fixCommits),
+    );
     return result;
   }
 
   // The agent looks at every failed run on the head, the triggering one first.
-  if (eventName === 'workflow_run' && failed && result.headSha) {
+  if (eventName === 'workflow_run' && run && failed && result.headSha) {
     const others = failedRunsOn(result.headSha).filter((other) => other.id !== run.id);
     result.failedRunIds = [run.id, ...others.map((other) => other.id)];
   } else if (eventName === 'workflow_run') {
     result.failedRunIds = [];
   }
 
+  // Launching (or, in a dry run, a clean verdict) means every condition held, so there is a run and a PR.
+  const launched = { pr: /** @type {PullRequest} */ (pr), run: /** @type {WorkflowRun} */ (run) };
   if (dryRun) {
     const resolved = Boolean(pr) && result.failedRunIds.length > 0;
-    if (!firstFailure) result.verdict = `would launch: ${launchReason(pr, run, result.attempts)}`;
+    if (!firstFailure) result.verdict = `would launch: ${launchReason(launched.pr, launched.run, result.attempts)}`;
     else if (firstFailedCondition === 'attempts') result.verdict = `would escalate: ${firstFailure}`;
     else result.verdict = `would skip: ${firstFailure}`;
     result.launch = resolved;
@@ -489,14 +551,14 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
       : `dry run: nothing to rehearse (${pr ? 'no failed run' : 'no PR'}); ${result.verdict}`;
   } else {
     result.launch = true;
-    result.reason = launchReason(pr, run, result.attempts);
+    result.reason = launchReason(launched.pr, launched.run, result.attempts);
   }
 
   if (result.launch) {
     for (const runId of result.failedRunIds) {
       try {
         result.logs[runId] = logsOf(runId);
-      } catch (error) {
+      } catch (/** @type {any} */ error) {
         // The agent can read the log itself; a missing copy is no reason to keep it from the PR.
         result.logs[runId] =
           `(renovate-doctor could not fetch run ${runId}'s failed-job logs: ${oneLine(error?.message ?? error)}; ` +
@@ -507,10 +569,20 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
   return result;
 }
 
+/**
+ * @param {PullRequest} pr
+ * @param {WorkflowRun} run
+ * @param {number | ''} attempts
+ */
 function launchReason(pr, run, attempts) {
   return `${run.name} run ${run.id} failed on Renovate PR #${pr.number}; ${plural(attempts || 0, 'fix attempt')} so far`;
 }
 
+/**
+ * @param {PullRequest} pr
+ * @param {WorkflowRun} run
+ * @param {Commit[]} fixCommits
+ */
 function escalationSummary(pr, run, fixCommits) {
   const listed = fixCommits.map((commit) => short(commit.sha)).join(', ');
   return (
@@ -544,7 +616,11 @@ export function formatOutputs(outputs, { delimiter = () => `RENOVATE_DOCTOR_EOF_
   return text;
 }
 
-/** The gate's result as the `$GITHUB_OUTPUT` keys the contract names. */
+/**
+ * The gate's result as the `$GITHUB_OUTPUT` keys the contract names.
+ *
+ * @param {GateResult} result
+ */
 export function toOutputs(result) {
   return {
     launch: result.launch ? 'true' : 'false',
@@ -564,9 +640,15 @@ export function toOutputs(result) {
 }
 
 // Four characters each, so the condition names line up in the job log.
+/** @type {Record<Check['result'], string>} */
 const labels = { pass: 'pass', fail: 'fail', unknown: '????' };
 
-/** The readable account of the decision, one line per condition, printed to the job log. */
+/**
+ * The readable account of the decision, one line per condition, printed to the job log.
+ *
+ * @param {GateResult} result
+ * @param {{ dryRun?: boolean }} [options]
+ */
 export function describeDecision(result, { dryRun = false } = {}) {
   const lines = [`renovate-doctor gate${dryRun ? ' (dry run)' : ''}:`];
   const byCondition = new Map(result.checks.map((check) => [check.condition, check]));
@@ -584,14 +666,23 @@ export function describeDecision(result, { dryRun = false } = {}) {
   return `${lines.join('\n')}\n`;
 }
 
-// GITHUB_WORKFLOW_REF is `owner/repo/.github/workflows/<file>@<ref>`; the path is what a run reports.
+/**
+ * GITHUB_WORKFLOW_REF is `owner/repo/.github/workflows/<file>@<ref>`; the path is what a run reports.
+ *
+ * @param {string | undefined} workflowRef
+ * @param {string} repository
+ */
 function workflowPath(workflowRef, repository) {
   if (!workflowRef) return '';
   const withoutRef = workflowRef.replace(/@.*$/, '');
   return withoutRef.startsWith(`${repository}/`) ? withoutRef.slice(repository.length + 1) : '';
 }
 
-/** The comma-separated author list, or the default when the variable is unset or empty. */
+/**
+ * The comma-separated author list, or the default when the variable is unset or empty.
+ *
+ * @param {string | undefined} value
+ */
 export function commentAuthorsFrom(value) {
   const authors = `${value ?? ''}`
     .split(',')
@@ -600,6 +691,10 @@ export function commentAuthorsFrom(value) {
   return authors.length ? authors : defaultCommentAuthors;
 }
 
+/**
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {GateInput}
+ */
 function readInput(env) {
   const eventName = env.GITHUB_EVENT_NAME ?? '';
   const event = env.GITHUB_EVENT_PATH ? JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8')) : {};
@@ -621,7 +716,8 @@ function readInput(env) {
  * Runs the gate from the environment: decides, prints, writes the logs and the outputs. Never throws
  * and never sets a failing exit code.
  *
- * @param {{ env?: NodeJS.ProcessEnv, github?: { ghApi: Function, gh: Function }, out?: (text: string) => void, err?: (text: string) => void }} [options]
+ * @param {{ env?: NodeJS.ProcessEnv, github?: Github, out?: (text: string) => void, err?: (text: string) => void }} [options]
+ * @returns {GateResult}
  */
 export function main({
   env = process.env,
@@ -648,7 +744,7 @@ export function main({
       const file = writeFailedLogs(logDir, runId, text);
       out(`Wrote run ${runId}'s failed-job logs to ${file}\n`);
     }
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     err(`renovate-doctor gate could not write the failed-job logs:\n${error?.stack ?? error}\n`);
   }
 
@@ -656,7 +752,7 @@ export function main({
   try {
     if (env.GITHUB_OUTPUT) fs.appendFileSync(env.GITHUB_OUTPUT, outputs);
     else out(`GITHUB_OUTPUT is not set; the outputs would be:\n${outputs}`);
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     err(`renovate-doctor gate could not write $GITHUB_OUTPUT:\n${error?.stack ?? error}\n`);
   }
   return result;

@@ -41,7 +41,14 @@ import { formatOutputs } from './gate.mjs';
 const renovateBot = 'renovate[bot]';
 const dashboardTitle = 'Dependency Dashboard';
 
-/** @typedef {(file: string, args: string[], options: { cwd?: string }) => string} Exec */
+/**
+ * @typedef {(file: string, args: string[], options: { cwd?: string }) => string} Exec
+ * @typedef {import('../lib/github.mjs').Github} Github
+ * @typedef {import('../lib/github.mjs').PullRequest} PullRequest
+ * @typedef {import('../lib/renovate_config.mjs').PackageRule} PackageRule
+ * @typedef {{ name: string, commit: string, date: string }} LiftedPackage
+ * @typedef {{ ticked: string[], lifted: string[], reopened: string[], dashboardUrl: string }} RecreateResult
+ */
 
 /** @type {Exec} */
 function defaultExec(file, args, { cwd } = {}) {
@@ -53,6 +60,7 @@ function defaultExec(file, args, { cwd } = {}) {
   });
 }
 
+/** @param {string} text */
 function escapeRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -60,6 +68,8 @@ function escapeRegExp(text) {
 /**
  * The name Renovate uses for a package in its branch names: `@vite-pwa/assets-generator` becomes
  * `vite-pwa-assets-generator`.
+ *
+ * @param {string} packageName
  */
 export function slugify(packageName) {
   return packageName
@@ -86,8 +96,14 @@ export function namesPackage(text, packageName) {
   return name.test(text) || branch.test(text);
 }
 
-/** The packages a config holds: those named by a rule with `"enabled": false`. */
+/**
+ * The packages a config holds: those named by a rule with `"enabled": false`.
+ *
+ * @param {any} config the parsed config
+ * @returns {Set<string>}
+ */
 export function heldPackages(config) {
+  /** @type {PackageRule[]} */
   const rules = Array.isArray(config?.packageRules) ? config.packageRules : [];
   return new Set(rules.filter((rule) => rule?.enabled === false).flatMap((rule) => rulePackages(rule)));
 }
@@ -95,6 +111,11 @@ export function heldPackages(config) {
 /**
  * Reads the config as it was at `revision`: `{}` when the file (or the revision, for a root commit's
  * parent) does not exist, undefined when the file is not valid JSON.
+ *
+ * @param {(args: string[]) => string} git
+ * @param {string} revision
+ * @param {string} configPath
+ * @returns {any}
  */
 function configAt(git, revision, configPath) {
   let text;
@@ -119,10 +140,10 @@ function configAt(git, revision, configPath) {
  *
  * @param {{ days: number, configPath: string, cwd?: string }} input
  * @param {{ exec?: Exec }} [deps]
- * @returns {{ name: string, commit: string, date: string }[]}
+ * @returns {LiftedPackage[]}
  */
 export function findLiftedPackages({ days, configPath, cwd }, { exec = defaultExec } = {}) {
-  const git = (args) => exec('git', args, { cwd });
+  const git = (/** @type {string[]} */ args) => exec('git', args, { cwd });
   const commits = git(['log', '--first-parent', `--since=${days}.days`, '--format=%H %cI', '--', configPath])
     .split('\n')
     .filter(Boolean)
@@ -149,16 +170,23 @@ export function findLiftedPackages({ days, configPath, cwd }, { exec = defaultEx
  * The PRs by `renovate[bot]` updated at or after `since` (an ISO date), open, closed or merged. PRs are read
  * most recently updated first, page by page, until a page reaches back past `since`: anything Renovate did
  * to a PR since then (opening, closing, reopening) updated it.
+ *
+ * @param {Pick<Github, 'ghApi'>} github
+ * @param {string} repository
+ * @param {string} since
+ * @returns {PullRequest[]}
  */
 export function renovatePullsSince(github, repository, since) {
   const cutoff = Date.parse(since);
+  /** @type {PullRequest[]} */
   const pulls = [];
   for (let page = 1; ; page += 1) {
+    /** @type {PullRequest[]} */
     const batch = github.ghApi(
       `repos/${repository}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=${page}`,
     );
     pulls.push(...batch.filter((pull) => pull.user?.login === renovateBot && Date.parse(pull.updated_at) >= cutoff));
-    if (batch.length < 100 || Date.parse(batch.at(-1).updated_at) < cutoff) return pulls;
+    if (batch.length < 100 || Date.parse(batch[batch.length - 1].updated_at) < cutoff) return pulls;
   }
 }
 
@@ -166,9 +194,12 @@ export function renovatePullsSince(github, repository, since) {
  * Whether Renovate has acted on a lift made at `since` with this PR: it opened the PR since, closed it
  * since, or has it open now. Renovate reopens an autoclosed PR rather than opening a new one, and a
  * reopened PR keeps its old `created_at`, so the creation date alone would miss it.
+ *
+ * @param {PullRequest} pull
+ * @param {number} since milliseconds since the epoch
  */
 function actedOnSince(pull, since) {
-  const at = (date) => (date ? Date.parse(date) : -Infinity);
+  const at = (/** @type {string | null | undefined} */ date) => (date ? Date.parse(date) : -Infinity);
   return at(pull.created_at) >= since || at(pull.closed_at) >= since || pull.state === 'open';
 }
 
@@ -181,6 +212,7 @@ function actedOnSince(pull, since) {
  * @returns {{ body: string, ticked: { name: string, line: string }[] }}
  */
 export function tickLines(body, packages) {
+  /** @type {{ name: string, line: string }[]} */
   const ticked = [];
   const lines = body.split('\n').map((line) => {
     const unchecked = /^(\s*[-*] )\[ \](\s*<!-- recreate-branch=.*)$/.exec(line);
@@ -197,8 +229,8 @@ export function tickLines(body, packages) {
  * Ticks the Dependency Dashboard for every lifted package Renovate has opened no PR for since its lift.
  *
  * @param {{ repository: string, days?: number, dryRun?: boolean, configPath?: string, cwd?: string }} input
- * @param {{ github: { ghApi: Function }, exec?: Exec, out?: (text: string) => void }} deps
- * @returns {{ ticked: string[], lifted: string[], reopened: string[], dashboardUrl: string }}
+ * @param {{ github: Pick<Github, 'ghApi'>, exec?: Exec, out?: (text: string) => void }} deps
+ * @returns {RecreateResult}
  */
 export function recreate(
   { repository, days = 60, dryRun = false, configPath = 'renovate.json', cwd = process.cwd() },
@@ -206,7 +238,8 @@ export function recreate(
 ) {
   if (!repository || !repository.includes('/')) throw new Error(`GITHUB_REPOSITORY is not owner/repo: ${repository}`);
   const heading = `renovate-doctor dashboard-recreate${dryRun ? ' (dry run)' : ''}`;
-  const result = { ticked: /** @type {string[]} */ ([]), lifted: [], reopened: [], dashboardUrl: '' };
+  /** @type {RecreateResult} */
+  const result = { ticked: [], lifted: [], reopened: [], dashboardUrl: '' };
 
   const lifted = findLiftedPackages({ days, configPath, cwd }, { exec });
   result.lifted = lifted.map((entry) => entry.name);
@@ -239,7 +272,10 @@ export function recreate(
     .ghApi(`repos/${repository}/issues?creator=${encodeURIComponent(renovateBot)}&state=open&per_page=100`, {
       paginate: true,
     })
-    .find((issue) => issue.title === dashboardTitle && !issue.pull_request);
+    .find(
+      (/** @type {{ title: string, pull_request?: unknown }} */ issue) =>
+        issue.title === dashboardTitle && !issue.pull_request,
+    );
   if (!dashboard) {
     out(`${heading}: no open "${dashboardTitle}" issue by ${renovateBot}; nothing ticked.\n`);
     return result;
@@ -287,7 +323,7 @@ export function parseArgs(argv) {
  * @param {{
  *   argv?: string[],
  *   env?: NodeJS.ProcessEnv,
- *   github?: { ghApi: Function },
+ *   github?: Pick<Github, 'ghApi'>,
  *   exec?: Exec,
  *   cwd?: string,
  *   out?: (text: string) => void,
@@ -303,6 +339,7 @@ export function main({
   out = (text) => process.stdout.write(text),
   err = (text) => process.stderr.write(text),
 } = {}) {
+  /** @type {string[]} */
   let ticked = [];
   let exitCode = 0;
   try {
@@ -312,7 +349,7 @@ export function main({
       { repository: env.GITHUB_REPOSITORY ?? '', ...args, configPath, cwd },
       { github, exec, out },
     ));
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     err(`renovate-doctor dashboard-recreate error:\n${error?.stack ?? error}\n`);
     exitCode = 1;
   }
@@ -321,7 +358,7 @@ export function main({
   try {
     if (env.GITHUB_OUTPUT) fs.appendFileSync(env.GITHUB_OUTPUT, outputs);
     else out(`GITHUB_OUTPUT is not set; the outputs would be:\n${outputs}`);
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     err(`renovate-doctor dashboard-recreate could not write $GITHUB_OUTPUT:\n${error?.stack ?? error}\n`);
     exitCode = 1;
   }

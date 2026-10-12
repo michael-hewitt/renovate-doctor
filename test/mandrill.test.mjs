@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { sendEmail } from '../lib/mandrill.mjs';
 
+/** @typedef {import('../lib/mandrill.mjs').Fetch} Fetch */
+
 const message = {
   apiKey: 'test-key',
   from: 'support@example.com',
@@ -14,8 +16,12 @@ const message = {
 // No pause between tries, so the retry test does not wait ten seconds.
 const noPause = { pauseMs: 0 };
 
+/**
+ * @param {unknown} result
+ * @param {number} [status]
+ */
 function respondWith(result, status = 200) {
-  return vi.fn(async () => ({ status, json: async () => result }));
+  return vi.fn(/** @type {Fetch} */ (async () => ({ status, json: async () => result })));
 }
 
 describe('sendEmail', () => {
@@ -63,12 +69,16 @@ describe('sendEmail', () => {
   });
 
   it('throws a readable error when the response is not JSON', async () => {
-    const fetchImpl = vi.fn(async () => ({
-      status: 502,
-      json: async () => {
-        throw new SyntaxError('Unexpected token <');
-      },
-    }));
+    const fetchImpl = vi.fn(
+      /** @type {Fetch} */ (
+        async () => ({
+          status: 502,
+          json: async () => {
+            throw new SyntaxError('Unexpected token <');
+          },
+        })
+      ),
+    );
     await expect(sendEmail(message, fetchImpl, noPause)).rejects.toThrow(/HTTP 502/);
   });
 

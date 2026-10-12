@@ -7,6 +7,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { handledMarker, readMarkers } from '../scripts/gate.mjs';
 import { compose, explain, formatComment, run } from '../scripts/report.mjs';
 
+/**
+ * @typedef {import('../scripts/report.mjs').ReportInput} ReportInput
+ * @typedef {import('../lib/outcome.mjs').OutcomeFile} OutcomeFile
+ * @typedef {import('../lib/mandrill.mjs').Fetch} Fetch
+ */
+
 // The PR and run are crescendosw/webapp's real vite-plugin-pwa v2 failure, the same as the gate's fixtures.
 const repository = 'crescendosw/webapp';
 const pr = {
@@ -25,11 +31,22 @@ const exhaustedSummary =
   'Fix attempts exhausted: chore(deps): update dependency vite-plugin-pwa to v2 (#3814) already carries 2 commits ' +
   'by someone other than renovate[bot] (a1b2c3d, e4f5a6b), and Node.js CI still fails on 457ec6c.';
 
-/** A valid outcome file as `readOutcomeFile` returns it. */
+/**
+ * A valid outcome file as `readOutcomeFile` returns it.
+ *
+ * @param {{ outcome: string, summary: string, mention?: boolean, links?: Record<string, string> }} outcome
+ * @returns {OutcomeFile}
+ */
 function file(outcome) {
-  return { exists: true, parsed: { ok: true, outcome: { mention: false, links: {}, ...outcome } } };
+  const parsed = { ok: true, outcome: { mention: false, links: {}, ...outcome } };
+  // The tests pass the outcome as a plain string, which `parseOutcome` would have checked.
+  return { exists: true, parsed: /** @type {import('../lib/outcome.mjs').ParsedOutcome} */ (parsed) };
 }
 
+/**
+ * @param {Partial<ReportInput>} [overrides]
+ * @returns {ReportInput}
+ */
 function triage(overrides = {}) {
   return {
     mode: 'triage',
@@ -115,6 +132,7 @@ describe('compose, in triage mode', () => {
   });
 
   it('reports a malformed outcome file as a failed run, listing the problems', () => {
+    /** @type {OutcomeFile} */
     const outcome = {
       exists: true,
       parsed: { ok: false, problems: ['"outcome" is "fixed"; it must be one of merged, rerun, declined, escalated'] },
@@ -172,6 +190,10 @@ describe('compose, in triage mode', () => {
 });
 
 describe('compose, in lift mode', () => {
+  /**
+   * @param {ReportInput['lift']} overrides
+   * @returns {ReportInput}
+   */
   const lift = (overrides) => ({ mode: 'lift', runUrl, repository, lift: overrides });
   const liftPr = 'https://github.com/crescendosw/webapp/pull/3901';
 
@@ -227,12 +249,17 @@ describe('compose, in lift mode', () => {
 describe('run', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'renovate-doctor-report-'));
 
+  /**
+   * @param {string} name
+   * @param {unknown} content
+   */
   function outcomeFile(name, content) {
     const target = path.join(temp, name);
     fs.writeFileSync(target, typeof content === 'string' ? content : JSON.stringify(content));
     return target;
   }
 
+  /** @param {Record<string, string>} [overrides] */
   function environment(overrides = {}) {
     return {
       REPORT_MODE: 'triage',
@@ -256,8 +283,12 @@ describe('run', () => {
     };
   }
 
+  /**
+   * @param {{ mandrill?: unknown, comment?: import('../lib/github.mjs').GhApi }} [options] `mandrill` is
+   *   Mandrill's answer, whatever its shape.
+   */
   function harness({ mandrill = [{ email: 'engineering@example.com', status: 'sent' }], comment } = {}) {
-    const fetchImpl = vi.fn(async () => ({ status: 200, json: async () => mandrill }));
+    const fetchImpl = vi.fn(/** @type {Fetch} */ (async () => ({ status: 200, json: async () => mandrill })));
     const ghApi = vi.fn(
       comment ?? (() => ({ html_url: 'https://github.com/crescendosw/webapp/pull/3814#issuecomment-1' })),
     );
@@ -274,7 +305,8 @@ describe('run', () => {
     };
   }
 
-  const sentMessage = (fetchImpl) => JSON.parse(fetchImpl.mock.calls[0][1].body).message;
+  const sentMessage = (/** @type {import('vitest').Mock<Fetch>} */ fetchImpl) =>
+    JSON.parse(fetchImpl.mock.calls[0][1].body).message;
 
   it('stays silent for a merged outcome, printing one line, and exits 0', async () => {
     const env = environment({ OUTCOME_FILE: outcomeFile('merged.json', { outcome: 'merged', summary: 'Fixed.' }) });
@@ -346,7 +378,8 @@ describe('run', () => {
       method: 'POST',
       body: { body: formatComment(pr.headSha, 'escalated', exhaustedSummary) },
     });
-    expect(ghApi.mock.calls[0][1].body.body.startsWith(`${marker}\n**renovate-doctor**\n`)).toBe(true);
+    const posted = /** @type {{ body: { body: string } }} */ (ghApi.mock.calls[0][1]);
+    expect(posted.body.body.startsWith(`${marker}\n**renovate-doctor**\n`)).toBe(true);
     expect(printed()).toContain('escalated, produced by the gate (attempts: 2 commits');
     expect(printed()).toContain('Posted the comment on PR #3814: https://github.com/crescendosw/webapp/pull/3814#');
   });
