@@ -126,18 +126,18 @@ any; the gate's reason (and verdict, in a dry run); and that reruns use `RENOVAT
    this repository; setup node with this repository's `.nvmrc` (only its scripts run here). Permissions:
    `contents`, `pull-requests`, `issues` write and `id-token: write`.
 2. `node .renovate-doctor/scripts/dashboard-recreate.mjs` with the job's token (`continue-on-error`): for every
-   hold lifted from the config in the last 60 days whose package has no open Renovate PR, tick the Dependency
-   Dashboard checkbox naming it.
+   hold lifted from the config in the last 60 days for which Renovate has opened no PR since, tick the
+   Dependency Dashboard "recreate" checkbox naming it.
 3. `node .renovate-doctor/scripts/lift.mjs`, run **inside** `anthropics/claude-code-action@v1`. The action
    exports the Claude App token, whose pushes start CI; a `GITHUB_TOKEN` push never does, so the lift PR's
    auto-merge would wait forever. The agent may run exactly that one command
    (`--allowedTools "Bash(<command>)" --max-turns 3`). The script's `$GITHUB_OUTPUT` inside the action is the
    action's inner step's, so it also writes its outputs and `exit_code` to `$RUNNER_TEMP/renovate-doctor/lift.json`.
 4. A step reads `lift.json` into `LIFT_OUTCOME`: `failure` when the file is missing, `exit_code` is not 0 or the
-   agent step failed; `opened` when `opened=true` (or, in a dry run, when packages would have been lifted, so
-   the rehearsal prints the email); otherwise `nothing`.
-5. Email (through `report.mjs` in lift mode): one email when a PR was opened or the step failed; none when
-   nothing had expired.
+   agent step failed; `blocked` when `blocked=true`; `opened` when `opened=true` (or, in a dry run, when
+   packages would have been lifted, so the rehearsal prints the email); otherwise `nothing`.
+5. Email (through `report.mjs` in lift mode): one email when a PR was opened, the lift was blocked by an open
+   earlier lift PR, or the step failed; none when nothing had expired.
 
 ## Gate contract (`scripts/gate.mjs`)
 
@@ -214,7 +214,7 @@ for CI.
 Environment: `REPORT_MODE` (`triage`/`lift`), `OUTCOME_FILE`, `AGENT_OUTCOME` (the agent step's `outcome`:
 `success`/`failure`/`cancelled`/`skipped`), `GATE_OUTCOME`, `GATE_SUMMARY`, `GATE_REASON`, `DRY_RUN`,
 `PR_NUMBER`, `PR_URL`, `PR_TITLE`, `HEAD_SHA`, `RUN_URL`, `GITHUB_REPOSITORY`, `GH_TOKEN`, `EMAIL_TO`,
-`EMAIL_FROM`, `EMAIL_FROM_NAME`, `MANDRILL_API_KEY`; for lift: `LIFT_OUTCOME` (`opened`/`nothing`/`failure`),
+`EMAIL_FROM`, `EMAIL_FROM_NAME`, `MANDRILL_API_KEY`; for lift: `LIFT_OUTCOME` (`opened`/`nothing`/`blocked`/`failure`),
 `LIFT_PR_URL`, `LIFT_SUMMARY`.
 
 Rules: no email for `merged` or `rerun` without `mention`, and never for `skipped`; otherwise one plain-text
@@ -231,25 +231,40 @@ the product of a non-merged run).
 
 A dated hold is a package rule with `"enabled": false` whose `description` contains `remove after YYYY-MM-DD:`
 (the same marker form as a removal-marker TODO, so both read the same). `removeExpiredRules(text, today)`
-returns `{ text, removed: [{ packages, date, description }], malformed: [...] }`; the returned text keeps
-two-space JSON formatting; a rule whose date is not a valid ISO date is reported as malformed and left alone;
+returns `{ text, removed: [{ packages, date, description, index }], malformed: [...] }`; the returned text
+keeps the file's formatting (removed rules are spliced out of the text; with `packageRules` written twice, the
+last one, which `JSON.parse` reads, is edited); a rule whose date is not a valid ISO date is reported as malformed and left alone;
 rules without a marker are untouched. Packages come from `matchPackageNames`, `matchDepNames` and
-`matchPackagePatterns`.
+`matchPackagePatterns`; a rule naming none (matched by prefix or source URL, say) is named
+`rule <index>: <start of its description>` in the title, summary and PR body.
 
 A **condition test** guarding a hold is a tracked file outside `node_modules` whose path looks like a test (a
 `test`, `tests`, `__tests__` or `spec` directory, or `.test.`/`.spec.` in the name, any case) and whose text
-contains the package name and either `renovate.json` or `packageRules` (`git grep -l`); `lift.mjs` deletes it
-with the rule.
+contains the package name as a quoted string (`'name'` or `"name"`, so `vite` never matches `vite-plugin-pwa`)
+and either `renovate.json` or `packageRules` (`git grep -l -E`); `lift.mjs` deletes it with the rule.
 
 `lift.mjs`: branch `renovate-doctor/lift-<YYYY-MM-DD>` from the default branch, one commit
 `chore(deps): lift expired Renovate holds (<packages>)`, push, PR whose body lists `Lifted holds:` one package
-per line and carries `<!-- renovate-doctor lift -->`, squash auto-merge enabled. `--today YYYY-MM-DD` and
-`--dry-run` (print the diff and the PR body, change nothing on GitHub). Outputs (`$GITHUB_OUTPUT`, and with
-`exit_code` to `$RUNNER_TEMP/renovate-doctor/lift.json` when `RUNNER_TEMP` is set) `opened` (`true`/`false`),
-`pr_url`, `packages`, and `summary` (one line for the email subject, e.g. `lifted 2 expired holds: foo, bar`;
-`lift failed: <why>` when the step fails). When the branch already has an open PR (a rerun of the same day's
-job, or a create whose answer was lost), that PR is reused: nothing is pushed again, auto-merge is enabled on
-it, and its URL is the output.
+per line and carries `<!-- renovate-doctor lift -->`, squash auto-merge enabled when the default branch
+requires checks. `--today YYYY-MM-DD` and `--dry-run` (print the diff and the PR body, change nothing on
+GitHub). Outputs (`$GITHUB_OUTPUT`, and with `exit_code` to `$RUNNER_TEMP/renovate-doctor/lift.json` when
+`RUNNER_TEMP` is set) `opened` (`true`/`false`), `blocked` (`true`/`false`), `pr_url`, `packages`, and
+`summary` (one line for the email subject, e.g. `lifted 2 expired holds: foo, bar`, counting holds, not
+packages; `lift failed: <why>` when the step fails).
+
+- **Reuse.** When today's branch already has an open PR (a rerun of the same day's job, or a create whose
+  answer was lost), that PR is reused: nothing is pushed again and its URL is the output. When today's branch
+  is on the remote with no open PR (an earlier run today failed before opening one), the remote branch is
+  deleted and pushed fresh.
+- **Blocked.** When any other open PR carries the lift marker, nothing is lifted: `opened=false`,
+  `blocked=true`, `pr_url` is that PR and `summary` is `previous lift PR still open: <url>`; the report emails
+  `[renovate-doctor] lift blocked`.
+- **Required checks.** Auto-merge is enabled only when the default branch requires status checks: branch
+  protection's `required_status_checks` (non-empty `contexts` or `checks`), or, when that is 404 or empty, a
+  `required_status_checks` rule from `rules/branches/<default>`. When neither requires any, auto-merge
+  would merge before CI ran, so it is left off and the PR body and `summary` say so. When GitHub refuses to
+  say (403, or any other error), auto-merge is enabled and the `summary` notes that the protection could not
+  be read.
 
 `dashboard-recreate.mjs`: the lifted packages come from the config's git history, which covers both ways a
 hold is lifted (a lift PR, and the agent's fix commit on a Renovate PR a condition test fired on): for every
@@ -257,10 +272,13 @@ commit on the default branch in the last 60 days that touched the config (`RENOV
 `renovate.json`; `git log --first-parent --since`), a package named by an `enabled: false` rule before the
 commit and by none after it was lifted, unless the current config holds it again; a commit whose config
 before or after is not valid JSON is skipped. The `Lifted holds:` lines in a lift PR body are for people,
-not a source. A lifted package with no open PR by `renovate[bot]` whose title or branch names it is looked
-up on the Dependency Dashboard issue (title `Dependency Dashboard`, author `renovate[bot]`); every unchecked
-`- [ ]` line that names the package is ticked and the body is saved once. Idempotent; `--dry-run` prints
-what it would tick.
+not a source. A lifted package is left alone when any PR by `renovate[bot]` whose title or branch names it was
+created at or after the lifting commit's date, open, closed or merged (`pulls?state=all&sort=created`, read
+back to the oldest lift): Renovate has acted on the lift, and a PR a person closed since must stay closed.
+Otherwise it is looked up on the Dependency Dashboard issue (title `Dependency Dashboard`, author
+`renovate[bot]`); every unchecked `- [ ]` **recreate** line (`<!-- recreate-branch=... -->`, Renovate's form
+for an update blocked by a closed PR) that names the package is ticked, never a rebase, approve or unlimit
+line, and the body is saved once. Idempotent; `--dry-run` prints what it would tick.
 
 ## The agent on GitHub
 

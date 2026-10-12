@@ -170,6 +170,26 @@ describe('compose, in lift mode', () => {
     expect(explain(input)).toBe('lift: nothing had expired; no email');
   });
 
+  it('emails when an earlier lift PR still open blocked the lift', () => {
+    const earlier = 'https://github.com/crescendosw/webapp/pull/3880';
+    const input = lift({ outcome: 'blocked', prUrl: earlier, summary: `previous lift PR still open: ${earlier}` });
+    expect(explain(input)).toBe(`lift: blocked by ${earlier}; emailing`);
+    expect(compose(input)).toEqual({
+      subject: '[renovate-doctor] lift blocked',
+      text: [
+        `lift blocked: previous lift PR still open: ${earlier}`,
+        '',
+        'Nothing was lifted this run. Merge or close the open lift PR; the next lift run then lifts every hold ' +
+          'that has expired by then.',
+        '',
+        `PR: ${earlier}`,
+        `Run: ${runUrl}`,
+        '',
+        `Repository: ${repository}`,
+      ].join('\n'),
+    });
+  });
+
   it('emails when the lift failed', () => {
     const message = compose(lift({ outcome: 'failure', prUrl: '', summary: '' }));
     expect(message).toEqual({

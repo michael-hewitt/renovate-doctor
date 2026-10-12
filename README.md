@@ -58,7 +58,8 @@ One plain-text email per run, or none, from the report step, never from the agen
 - **One email** for `declined`, `escalated`, and every run that failed. The subject is
   `[renovate-doctor] <outcome>: <PR title>`. The body has the agent's summary and links to the PR, the run and,
   for a decline, the hold PR.
-- Lift mode emails when it opened a lift PR or failed, and is silent when nothing had expired.
+- Lift mode emails when it opened a lift PR, when it lifted nothing because an earlier lift PR is still open
+  (`[renovate-doctor] lift blocked`), or when it failed, and is silent when nothing had expired.
 
 The mail goes through Mandrill's send API. A refused send fails the report step, because the email is the
 whole product of a run that did not merge.
@@ -71,13 +72,16 @@ Every declined update carries a trip wire that brings it back:
    test runner reads the blocking fact (a peer range, `engines`, an exported symbol) and fails the moment it
    changes. Typically a newer release of the _other_ package lifts the blocker. That release arrives as its own
    Renovate PR, and the test fails on it. Triage runs, and the agent reads the test's message, removes the hold
-   rule and deletes the test in its fix commit. Renovate then reopens the held update. If it has not done so by
-   the next monthly lift run, the lift ticks the update's line on the Dependency Dashboard.
+   rule and deletes the test in its fix commit. Renovate then reopens the held update. If it has opened no PR
+   for it by the next monthly lift run, the lift ticks the update's "recreate" line on the Dependency
+   Dashboard.
 2. **Dated marker** (always present, alone when nothing can be tested): the rule's description contains
    `remove after YYYY-MM-DD: <what to check>`. The monthly lift run removes every rule whose date has passed,
-   together with any condition test guarding it, in one PR on auto-merge. Renovate then retries the update, and
-   if it still cannot be taken, it fails CI and is triaged like any other. The next lift run ticks "recreate"
-   on the Dependency Dashboard for lifted holds that Renovate has not reopened.
+   together with any condition test guarding it, in one PR on auto-merge (left for you to merge when the
+   default branch requires no checks). Renovate then retries the update, and if it still cannot be taken, it
+   fails CI and is triaged like any other. The next lift run ticks "recreate" on the Dependency Dashboard for
+   lifted holds Renovate has opened no PR for since; a PR Renovate opened and a person then closed stays
+   closed.
 
 A hold rule looks like this:
 
@@ -116,7 +120,7 @@ run stops:
   forever for its checks.
 - **Branch protection requiring your CI checks** on the default branch, and **Allow auto-merge** turned on in the
   repository settings. Without required checks, `gh pr merge --auto` merges at once, before CI has run on the
-  fix.
+  fix; the lift checks for them and, finding none, leaves its PR for you to merge.
 - **A Renovate config in JSON** (`renovate.json` by default, or set `renovate_config`) with the Dependency
   Dashboard enabled, which Renovate's default config does.
 - **The caller workflow on the default branch.** GitHub only fires `workflow_run` from the copy of the workflow
@@ -322,7 +326,8 @@ Stated in the skill and enforced in code where code can enforce them:
   head SHA that failed, while it is open.
 - **Two fix attempts at most**: on the third failure the gate escalates without an agent.
 - **Never merge without green checks**: auto-merge only (`--auto --squash`), never `--admin`, never a plain
-  merge.
+  merge. The lift enables auto-merge only when the default branch requires status checks (branch protection
+  or a ruleset).
 - **Never approve visual-snapshot changes**, and never approve a PR.
 - **No force-push**, no amending or rewriting a commit that is on the remote.
 - **No touching other PRs, branches or issues**, apart from the agent's own `renovate-doctor/hold-*` PR and the

@@ -40,6 +40,7 @@ describe('removeExpiredRules', () => {
       {
         packages: ['@vite-pwa/assets-generator'],
         date: '2026-09-30',
+        index: 0,
         description:
           'vite-plugin-pwa only accepts the generator at v1 as a peer. remove after 2026-09-30: check whether ' +
           "vite-plugin-pwa's peer range accepts v2",
@@ -47,6 +48,7 @@ describe('removeExpiredRules', () => {
       {
         packages: ['typescript', '@typescript/native-preview'],
         date: '2026-10-12',
+        index: 4,
         description:
           'typescript 7 needs the native preview of the type checker. remove after 2026-10-12: try tsgo on the client',
       },
@@ -105,8 +107,34 @@ describe('removeExpiredRules', () => {
     const result = removeExpiredRules(config, today);
     expect(result.text).toBe('{\n  "extends": ["config:recommended"]\n}\n');
     expect(result.removed).toEqual([
-      { packages: ['left-pad'], date: '2026-01-31', description: 'remove after 2026-01-31: retry' },
+      { packages: ['left-pad'], date: '2026-01-31', description: 'remove after 2026-01-31: retry', index: 0 },
     ]);
+  });
+
+  it('edits the last packageRules key when the key is written twice, as JSON.parse reads it', () => {
+    const config = [
+      '{',
+      '  "packageRules": [{ "matchPackageNames": ["first"], "enabled": false }],',
+      '  "packageRules": [',
+      '    { "description": "remove after 2026-01-31: retry", "matchPackageNames": ["a"], "enabled": false },',
+      '    { "matchPackageNames": ["b"], "enabled": false }',
+      '  ]',
+      '}',
+      '',
+    ].join('\n');
+    const result = removeExpiredRules(config, today);
+    expect(result.removed.map((rule) => rule.packages)).toEqual([['a']]);
+    expect(result.text).toBe(
+      [
+        '{',
+        '  "packageRules": [{ "matchPackageNames": ["first"], "enabled": false }],',
+        '  "packageRules": [',
+        '    { "matchPackageNames": ["b"], "enabled": false }',
+        '  ]',
+        '}',
+        '',
+      ].join('\n'),
+    );
   });
 
   it('removes packageRules from the middle of the config with the comma after it', () => {
@@ -155,10 +183,13 @@ describe('findConditionTests', () => {
     'package.json': '{ "devDependencies": { "@vite-pwa/assets-generator": "^1.0.0" } }\n',
     'client/src/util/test/pwa_assets_generator_hold.test.ts': holdTest,
     'client/vite.config.ts': '// pwaAssets loads @vite-pwa/assets-generator at build time.\nexport default {};\n',
-    'docs/holds.md': 'The @vite-pwa/assets-generator hold lives in packageRules.\n',
-    'docs/notes.md': 'eslint is held in renovate.json.\n',
-    'tools/__tests__/eslint_hold.js': '// Reads renovate.json for the eslint hold.\n',
-    'tools/Eslint.Spec.ts': '// Reads packageRules for the eslint hold.\n',
+    'docs/holds.md': "The '@vite-pwa/assets-generator' hold lives in packageRules.\n",
+    'docs/notes.md': "'eslint' is held in renovate.json.\n",
+    'tools/__tests__/eslint_hold.js': "// Reads renovate.json for the 'eslint' hold.\n",
+    'tools/Eslint.Spec.ts': '// Reads packageRules for the "eslint" hold.\n',
+    'tools/test/unquoted.test.js': '// Reads packageRules for the eslint hold, naming it unquoted.\n',
+    'client/test/vite_plugin_pwa_hold.test.ts': "const name = 'vite-plugin-pwa'; // read from renovate.json\n",
+    'client/test/vite_hold.test.ts': 'const name = "vite"; // read from packageRules\n',
     'node_modules/@vite-pwa/assets-generator/README.md': '@vite-pwa/assets-generator, see renovate.json\n',
   };
   for (const [file, content] of Object.entries(files)) {
@@ -188,6 +219,11 @@ describe('findConditionTests', () => {
       'tools/Eslint.Spec.ts',
       'tools/__tests__/eslint_hold.js',
     ]);
+  });
+
+  it('matches the package name only as a quoted string, never inside a longer name', () => {
+    expect(findConditionTests('vite', { gitGrep })).toEqual(['client/test/vite_hold.test.ts']);
+    expect(findConditionTests('vite-plugin-pwa', { gitGrep })).toEqual(['client/test/vite_plugin_pwa_hold.test.ts']);
   });
 
   it('finds nothing for a package no file names', () => {
