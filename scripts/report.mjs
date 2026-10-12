@@ -69,11 +69,11 @@ const silentOutcomes = ['skipped'];
 
 /**
  * The PR comment the report posts when the gate produced the outcome, in the form every renovate-doctor
- * comment takes: the sha marker on its own line (which the gate's "not handled" check looks for), a bold
- * heading, the outcome, and the summary.
+ * comment takes: the marker with the sha and the outcome on its own line (which the gate's "not handled"
+ * check reads), a bold heading, the outcome, and the summary.
  */
 export function formatComment(headSha, outcome, summary) {
-  return `${handledMarker(headSha)}\n**renovate-doctor**\n\nOutcome: ${outcome}\n\n${summary}\n`;
+  return `${handledMarker(headSha, outcome)}\n**renovate-doctor**\n\nOutcome: ${outcome}\n\n${summary}\n`;
 }
 
 /**

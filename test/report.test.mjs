@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { handledMarker, readMarkers } from '../scripts/gate.mjs';
 import { compose, explain, formatComment, run } from '../scripts/report.mjs';
 
 // The PR and run are crescendosw/webapp's real vite-plugin-pwa v2 failure, the same as the gate's fixtures.
@@ -16,7 +17,9 @@ const pr = {
 };
 const runUrl = 'https://github.com/crescendosw/webapp/actions/runs/37993773276';
 const configPr = 'https://github.com/crescendosw/webapp/pull/3890';
-const marker = '<!-- renovate-doctor sha=457ec6c5b51041158be71b2f26907c052d8fe7e9 -->';
+// Every marker in these tests is on the gate's escalation comment, so it carries that outcome: the gate
+// reads it to tell a settled SHA from one that was only rerun.
+const marker = '<!-- renovate-doctor sha=457ec6c5b51041158be71b2f26907c052d8fe7e9 outcome=escalated -->';
 
 const exhaustedSummary =
   'Fix attempts exhausted: chore(deps): update dependency vite-plugin-pwa to v2 (#3814) already carries 2 commits ' +
@@ -406,5 +409,15 @@ describe('run', () => {
     await expect(run(environment({ REPORT_MODE: 'audit' }), deps)).resolves.toBe(1);
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(errors()).toContain('REPORT_MODE is "audit", not triage or lift');
+  });
+});
+
+describe('formatComment', () => {
+  it('starts with the marker carrying the sha and the outcome, which the gate reads back', () => {
+    const comment = formatComment(pr.headSha, 'escalated', exhaustedSummary);
+    expect(comment.split('\n')[0]).toBe(handledMarker(pr.headSha, 'escalated'));
+    const { handled, rerun } = readMarkers([{ body: comment }], pr.headSha);
+    expect(handled).toBeDefined();
+    expect(rerun).toBeUndefined();
   });
 });

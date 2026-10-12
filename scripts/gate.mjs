@@ -35,9 +35,40 @@ export const conditions = ['failure', 'renovate', 'open', 'not handled', "rerun 
 /** Two fix commits on a branch are enough; a third would only loop with CI. */
 const maxAttempts = 2;
 
-/** The PR-comment marker every renovate-doctor comment for `sha` starts with. */
-export function handledMarker(sha) {
-  return `<!-- renovate-doctor sha=${sha} -->`;
+/**
+ * The PR-comment marker every renovate-doctor comment starts with: the head SHA it is about and the
+ * outcome it reports. The outcome is there because a `rerun` does not settle a SHA: when the rerun fails
+ * again, the doctor must look a second time rather than take the comment as "handled".
+ *
+ * @param {string} sha
+ * @param {string} outcome `merged`, `rerun`, `declined` or `escalated`
+ */
+export function handledMarker(sha, outcome) {
+  return `<!-- renovate-doctor sha=${sha} outcome=${outcome} -->`;
+}
+
+// Every marker in a comment body. A marker without `outcome=` comes from before the outcome was recorded
+// (or from a hand-written comment); it is read as handled, since staying quiet is the safe mistake.
+const markerPattern = /<!-- renovate-doctor sha=(\S+?)(?: outcome=(\S+?))? -->/g;
+
+/**
+ * What the PR's comments say about `sha`: the comment that settled it (any outcome but `rerun`), if
+ * any, and the comment recording a rerun of it, if any.
+ *
+ * @param {{ body?: string, html_url?: string }[]} comments
+ * @param {string} sha
+ */
+export function readMarkers(comments, sha) {
+  let handled;
+  let rerun;
+  for (const comment of comments) {
+    for (const [, markedSha, outcome] of `${comment.body ?? ''}`.matchAll(markerPattern)) {
+      if (markedSha !== sha) continue;
+      if (outcome === 'rerun') rerun ??= comment;
+      else handled ??= comment;
+    }
+  }
+  return { handled, rerun };
 }
 
 /**
@@ -67,6 +98,7 @@ export function handledMarker(sha) {
  *   headBranch: string,
  *   failedRunIds: number[],
  *   attempts: number | '',
+ *   rerunBefore: boolean,
  *   checks: Check[],
  *   logs: Record<string, string>,
  *   error?: Error,
@@ -87,6 +119,7 @@ function blankResult() {
     headBranch: '',
     failedRunIds: /** @type {number[]} */ ([]),
     attempts: /** @type {number | ''} */ (''),
+    rerunBefore: false,
     checks: /** @type {Check[]} */ ([]),
     logs: /** @type {Record<string, string>} */ ({}),
   };
@@ -277,11 +310,17 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
     const comments = github.ghApi(`repos/${repository}/issues/${pr.number}/comments?per_page=100`, {
       paginate: true,
     });
-    const marker = handledMarker(result.headSha);
-    const handled = comments.find((comment) => comment.body?.includes(marker));
-    const detail = handled
-      ? `PR #${pr.number} already has a renovate-doctor comment for ${short(result.headSha)} (${handled.html_url})`
-      : `no renovate-doctor comment for ${short(result.headSha)} on PR #${pr.number}`;
+    const { handled, rerun } = readMarkers(comments, result.headSha);
+    // The agent is told its own rerun already happened, so the same failure twice is not rerun again.
+    result.rerunBefore = Boolean(rerun);
+    let detail;
+    if (handled) {
+      detail = `PR #${pr.number} already has a renovate-doctor comment for ${short(result.headSha)} (${handled.html_url})`;
+    } else if (rerun) {
+      detail = `renovate-doctor reran ${short(result.headSha)} on PR #${pr.number} (${rerun.html_url}) and it failed again`;
+    } else {
+      detail = `no renovate-doctor comment for ${short(result.headSha)} on PR #${pr.number}`;
+    }
     if (!record('not handled', !handled, detail)) return skip();
   } else {
     record('not handled', undefined, 'no PR to read comments from');
@@ -423,6 +462,7 @@ export function toOutputs(result) {
     head_branch: result.headBranch,
     failed_run_ids: result.failedRunIds.join(','),
     attempts: result.attempts,
+    rerun_before: result.rerunBefore ? 'true' : 'false',
   };
 }
 
