@@ -156,7 +156,8 @@ refused commands (dry run) or that reruns use `RENOVATE_DOCTOR_ACTIONS_TOKEN`.
    action's inner step's, so it also writes its outputs and `exit_code` to `$RUNNER_TEMP/renovate-doctor/lift.json`.
 4. A step reads `lift.json` into `LIFT_OUTCOME`: `failure` when the file is missing, `exit_code` is not 0 or the
    agent step failed; `blocked` when `blocked=true`; `opened` when `opened=true` (or, in a dry run, when
-   packages would have been lifted, so the rehearsal prints the email); otherwise `nothing`.
+   `removed` is above 0, so the rehearsal prints the email; `packages` can be empty for a rule matched by
+   prefix); otherwise `nothing`.
 5. Job outputs `outcome`, `pr_url` and `summary` (from step 4) for the report job, which emails (through
    `report.mjs` in lift mode) when a PR was opened, the lift was blocked by an open earlier lift PR, or the
    step failed, and is silent when nothing had expired.
@@ -293,24 +294,30 @@ rules without a marker are untouched. Packages come from `matchPackageNames`, `m
 `rule <index>: <start of its description>` in the title, summary and PR body.
 
 A **condition test** guarding a hold is a tracked file outside `node_modules` whose path looks like a test (a
-`test`, `tests`, `__tests__` or `spec` directory, or `.test.`/`.spec.` in the name, any case) and whose text
-contains the package name as a quoted string (`'name'` or `"name"`, so `vite` never matches `vite-plugin-pwa`)
-and either `renovate.json` or `packageRules` (`git grep -l -E`); `lift.mjs` deletes it with the rule.
+`test`, `tests`, `__tests__` or `spec` directory, or `.test.`/`.spec.` in the name, any case) and which carries
+the marker `renovate-doctor hold: <package>` in a comment, ending its line (bar a `*/` or `-->` closer, so the
+marker for `vite` is not found in the one for `vite-plugin-pwa`; `git grep -l -E`). Nothing else counts: a
+test naming the package (as the other side of a peer check, say) without the marker is never deleted.
+`lift.mjs` deletes every marked test with the rule; Renovate config files and `package.json` never count.
 
 `lift.mjs`: branch `renovate-doctor/lift-<YYYY-MM-DD>` from the default branch, one commit
 `chore(deps): lift expired Renovate holds (<packages>)`, push, PR whose body lists `Lifted holds:` one package
 per line and carries `<!-- renovate-doctor lift -->`, squash auto-merge enabled when the default branch
 requires checks. `--today YYYY-MM-DD` and `--dry-run` (print the diff and the PR body, change nothing on
 GitHub). Outputs (`$GITHUB_OUTPUT`, and with `exit_code` to `$RUNNER_TEMP/renovate-doctor/lift.json` when
-`RUNNER_TEMP` is set) `opened` (`true`/`false`), `blocked` (`true`/`false`), `pr_url`, `packages`, and
-`summary` (one line for the email subject, e.g. `lifted 2 expired holds: foo, bar`, counting holds, not
+`RUNNER_TEMP` is set) `opened` (`true`/`false`), `blocked` (`true`/`false`), `pr_url`, `packages`, `removed`
+(the number of holds, i.e. rules, removed or, in a dry run, to be removed), and `summary` (one line for the email subject, e.g. `lifted 2 expired holds: foo, bar`, counting holds, not
 packages; `lift failed: <why>` when the step fails).
+
+Only PRs whose head is a branch of this repository (`head.repo.full_name` is the repository) are reused or
+block; a fork's PR is ignored, since the lift's branch name is predictable.
 
 - **Reuse.** When today's branch already has an open PR (a rerun of the same day's job, or a create whose
   answer was lost), that PR is reused: nothing is pushed again and its URL is the output. When today's branch
   is on the remote with no open PR (an earlier run today failed before opening one), the remote branch is
   deleted and pushed fresh.
-- **Blocked.** When any other open PR carries the lift marker, nothing is lifted: `opened=false`,
+- **Blocked.** When an open PR on another `renovate-doctor/lift-*` branch carries the lift marker, nothing is
+  lifted: `opened=false`,
   `blocked=true`, `pr_url` is that PR and `summary` is `previous lift PR still open: <url>`; the report emails
   `[renovate-doctor] lift blocked`.
 - **Required checks.** Auto-merge is enabled only when the default branch requires status checks: branch
@@ -326,9 +333,10 @@ commit on the default branch in the last 60 days that touched the config (`RENOV
 `renovate.json`; `git log --first-parent --since`), a package named by an `enabled: false` rule before the
 commit and by none after it was lifted, unless the current config holds it again; a commit whose config
 before or after is not valid JSON is skipped. The `Lifted holds:` lines in a lift PR body are for people,
-not a source. A lifted package is left alone when any PR by `renovate[bot]` whose title or branch names it was
-created at or after the lifting commit's date, open, closed or merged (`pulls?state=all&sort=created`, read
-back to the oldest lift): Renovate has acted on the lift, and a PR a person closed since must stay closed.
+not a source. A lifted package is left alone when a PR by `renovate[bot]` whose title or branch names it was
+created or closed at or after the lifting commit's date, or is open now (Renovate reopens an autoclosed PR,
+which keeps its old `created_at`); PRs are read with `pulls?state=all&sort=updated&direction=desc` back to
+the oldest lift. Renovate has acted on the lift, and a PR a person closed since must stay closed.
 Otherwise it is looked up on the Dependency Dashboard issue (title `Dependency Dashboard`, author
 `renovate[bot]`); every unchecked `- [ ]` **recreate** line (`<!-- recreate-branch=... -->`, Renovate's form
 for an update blocked by a closed PR) that names the package is ticked, never a rebase, approve or unlimit

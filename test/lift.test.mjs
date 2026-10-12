@@ -15,7 +15,8 @@ const fixtures = path.join(import.meta.dirname, 'fixtures');
 const text = (name) => fs.readFileSync(path.join(fixtures, name), 'utf8');
 const holdsConfig = text('renovate_holds.json');
 const webappConfig = text('webapp_renovate.json');
-const holdTest = text('pwa_assets_generator_hold.test.ts.txt');
+// webapp's real hold test, with the marker line the lift finds condition tests by.
+const holdTest = `// renovate-doctor hold: @vite-pwa/assets-generator\n${text('pwa_assets_generator_hold.test.ts.txt')}`;
 
 const repository = 'crescendosw/webapp';
 const today = '2026-10-12';
@@ -119,6 +120,7 @@ describe('lift', () => {
       blocked: 'false',
       pr_url: '',
       packages: '',
+      removed: '0',
       summary: 'nothing expired',
     });
   });
@@ -152,6 +154,7 @@ describe('lift', () => {
       blocked: 'false',
       pr_url: prUrl,
       packages: '@vite-pwa/assets-generator,typescript,@typescript/native-preview',
+      removed: '2',
       summary: lifted3,
     });
 
@@ -205,7 +208,11 @@ describe('lift', () => {
 
   it('reuses an open PR already on the branch instead of pushing again', () => {
     const { origin, work } = makeRepo();
-    const existing = { number: 3899, html_url: 'https://github.com/x/y/pull/3899', head: { ref: branch } };
+    const existing = {
+      number: 3899,
+      html_url: 'https://github.com/x/y/pull/3899',
+      head: { ref: branch, repo: { full_name: repository } },
+    };
     const github = githubForNewPr({ [openPrsRoute]: [{ ...existing, body: liftMarker }] });
     const result = lift({ today, repository, cwd: work }, { github, exec, out: () => {} });
 
@@ -224,7 +231,7 @@ describe('lift', () => {
     const { work } = makeRepo();
     const github = fakeGithub({
       [openPrsRoute]: [],
-      [branchPrsRoute]: [{ number: 3901, html_url: prUrl }],
+      [branchPrsRoute]: [{ number: 3901, html_url: prUrl, head: { ref: branch, repo: { full_name: repository } } }],
       [`repos/${repository}`]: { default_branch: 'main' },
       [protectionRoute]: requiredChecks,
       [`repos/${repository}/pulls`]: () => {
@@ -241,10 +248,15 @@ describe('lift', () => {
     const earlier = {
       number: 3880,
       html_url: 'https://github.com/crescendosw/webapp/pull/3880',
-      head: { ref: 'renovate-doctor/lift-2026-09-12' },
+      head: { ref: 'renovate-doctor/lift-2026-09-12', repo: { full_name: repository } },
       body: `Lifted holds:\n- eslint (held until 2026-09-01): retry\n\n${liftMarker}\n`,
     };
-    const unrelated = { number: 3886, html_url: 'https://x/3886', head: { ref: 'renovate/x' }, body: 'Renovate' };
+    const unrelated = {
+      number: 3886,
+      html_url: 'https://x/3886',
+      head: { ref: 'renovate/x', repo: { full_name: repository } },
+      body: 'Renovate',
+    };
     const github = githubForNewPr({ [openPrsRoute]: [unrelated, earlier] });
     const result = lift({ today, repository, cwd: work }, { github, exec, out: () => {} });
 
@@ -253,11 +265,42 @@ describe('lift', () => {
       blocked: 'true',
       pr_url: earlier.html_url,
       packages: '@vite-pwa/assets-generator,typescript,@typescript/native-preview',
+      removed: '2',
       summary: `previous lift PR still open: ${earlier.html_url}`,
     });
     expect(github.calls.map((call) => call.route ?? call.gh.join(' '))).toEqual([`repos/${repository}`, openPrsRoute]);
     expect(git(origin, ['branch', '--list']).trim()).toBe('* main');
     expect(git(work, ['status', '--porcelain'])).toBe('');
+  });
+
+  it("ignores a fork's PR named like today's lift branch, and pushes its own", () => {
+    const { origin, work } = makeRepo();
+    const fork = {
+      number: 3999,
+      html_url: 'https://github.com/crescendosw/webapp/pull/3999',
+      head: { ref: branch, repo: { full_name: 'stranger/webapp' } },
+      body: liftMarker,
+    };
+    const github = githubForNewPr({ [openPrsRoute]: [fork] });
+    const result = lift({ today, repository, cwd: work }, { github, exec, out: () => {} });
+
+    expect(result).toMatchObject({ opened: true, prUrl });
+    expect(result.reused).toBeUndefined();
+    expect(github.calls.filter((call) => call.gh)).toEqual([{ gh: ['pr', 'merge', prUrl, '--auto', '--squash'] }]);
+    expect(git(origin, ['rev-parse', `${branch}~1`])).toBe(git(origin, ['rev-parse', 'main']));
+  });
+
+  it('is not blocked by an open PR carrying the lift marker on a branch that is not a lift branch', () => {
+    const quoting = {
+      number: 3998,
+      html_url: 'https://github.com/crescendosw/webapp/pull/3998',
+      head: { ref: 'docs/explain-the-lift', repo: { full_name: repository } },
+      body: `The lift PR body ends with ${liftMarker}.`,
+    };
+    const github = githubForNewPr({ [openPrsRoute]: [quoting] });
+    const result = lift({ today, repository, cwd: makeRepo().work }, { github, exec, out: () => {} });
+    expect(result).toMatchObject({ opened: true, prUrl });
+    expect(result.blocked).toBeUndefined();
   });
 
   it('replaces its own branch left on the remote by an earlier run today that opened no PR', () => {
@@ -352,6 +395,16 @@ describe('prTitle and summarize', () => {
     );
     expect(summarize(removed)).toBe('lifted 2 expired holds: a, b, rule 5: Internal packages wait for the v3 API. r');
   });
+
+  it('report a lifted prefix-only rule in `removed` even though it adds nothing to `packages`', () => {
+    const removed = [{ packages: [], date: '2026-01-01', description: 'Internal packages.', index: 2 }];
+    const outputs = toOutputs({ opened: false, prUrl: '', packages: [], removed, summary: summarize(removed) });
+    expect(outputs).toMatchObject({
+      packages: '',
+      removed: '1',
+      summary: 'lifted 1 expired hold: rule 2: Internal packages.',
+    });
+  });
 });
 
 describe('formatPrBody', () => {
@@ -399,6 +452,7 @@ describe('main', () => {
     expect(code).toBe(0);
     expect(fs.readFileSync(outputFile, 'utf8')).toBe(
       'opened=false\nblocked=false\npr_url=\npackages=@vite-pwa/assets-generator,typescript,@typescript/native-preview\n' +
+        'removed=2\n' +
         'summary=dry run: would lift 2 expired holds: @vite-pwa/assets-generator, typescript, @typescript/native-preview\n',
     );
     expect(git(work, ['status', '--porcelain'])).toBe('');
@@ -418,7 +472,7 @@ describe('main', () => {
     });
     expect(code).toBe(1);
     expect(fs.readFileSync(outputFile, 'utf8')).toBe(
-      'opened=false\nblocked=false\npr_url=\npackages=\nsummary=lift failed: --today must be a YYYY-MM-DD date, not 2026-10-32\n',
+      'opened=false\nblocked=false\npr_url=\npackages=\nremoved=0\nsummary=lift failed: --today must be a YYYY-MM-DD date, not 2026-10-32\n',
     );
     expect(errors.text()).toContain('renovate-doctor lift error');
   });
@@ -447,6 +501,7 @@ describe('main', () => {
         blocked: 'false',
         pr_url: prUrl,
         packages: '@vite-pwa/assets-generator,typescript,@typescript/native-preview',
+        removed: '2',
         summary: lifted3,
         exit_code: 0,
       },
@@ -458,6 +513,7 @@ describe('main', () => {
         blocked: 'false',
         pr_url: '',
         packages: '',
+        removed: '0',
         summary: 'lift failed: --today must be a YYYY-MM-DD date, not tomorrow',
         exit_code: 1,
       },

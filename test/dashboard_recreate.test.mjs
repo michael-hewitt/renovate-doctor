@@ -25,7 +25,7 @@ const holdTest = fs.readFileSync(path.join(fixtures, 'pwa_assets_generator_hold.
 
 const repository = 'crescendosw/webapp';
 const routes = {
-  pulls: (page) => `repos/${repository}/pulls?state=all&sort=created&direction=desc&per_page=100&page=${page}`,
+  pulls: (page) => `repos/${repository}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=${page}`,
   issues: `repos/${repository}/issues?creator=renovate%5Bbot%5D&state=open&per_page=100`,
   dashboard: `repos/${repository}/issues/1460`,
 };
@@ -36,6 +36,8 @@ const daysAgo = (days) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toIS
 const generatorPr = {
   number: 3886,
   created_at: daysAgo(10),
+  updated_at: daysAgo(10),
+  closed_at: null,
   merged_at: null,
   title: 'chore(deps): update dependency @vite-pwa/assets-generator to v2',
   html_url: 'https://github.com/crescendosw/webapp/pull/3886',
@@ -259,7 +261,7 @@ describe('recreate', () => {
   });
 
   it("never undoes a person's close: a Renovate PR opened since the lift and closed counts, as a merged one does", () => {
-    const closed = { ...generatorPr, state: 'closed' };
+    const closed = { ...generatorPr, state: 'closed', closed_at: daysAgo(8), updated_at: daysAgo(8) };
     const merged = {
       ...generatorPr,
       number: 3895,
@@ -267,6 +269,8 @@ describe('recreate', () => {
       head: { ref: 'renovate/typescript-7.x' },
       state: 'closed',
       merged_at: daysAgo(2),
+      closed_at: daysAgo(2),
+      updated_at: daysAgo(2),
       created_at: daysAgo(4),
     };
     const github = githubWith({ pulls: [merged, closed] });
@@ -276,10 +280,35 @@ describe('recreate', () => {
     expect(patches(github)).toEqual([]);
   });
 
-  it('ignores a Renovate PR from before the lift, and never ticks a line that is not a recreate line', () => {
-    // The generator's PR predates its lift, so it does not count; but the generator's dashboard line is
-    // the "Open" section's rebase checkbox, which is never ticked.
-    const github = githubWith({ pulls: [{ ...generatorPr, created_at: daysAgo(30) }] });
+  it('counts a PR Renovate reopened (an old creation date, open now) or closed since the lift', () => {
+    const reopened = { ...generatorPr, created_at: daysAgo(60), updated_at: daysAgo(3) };
+    const closedSince = {
+      ...generatorPr,
+      number: 3237,
+      title: 'fix(deps): update dependency typescript to v7',
+      head: { ref: 'renovate/typescript-7.x' },
+      state: 'closed',
+      created_at: daysAgo(60),
+      closed_at: daysAgo(12),
+      updated_at: daysAgo(12),
+    };
+    const github = githubWith({ pulls: [reopened, closedSince] });
+    const result = recreate({ repository, cwd: repo }, { github, out: () => {} });
+    expect(result.reopened).toEqual(['@vite-pwa/assets-generator', 'typescript']);
+    expect(result.ticked).toEqual([]);
+  });
+
+  it('ignores a Renovate PR closed before the lift, and never ticks a line that is not a recreate line', () => {
+    // The generator's PR was opened and closed before its lift 15 days ago, so it does not count; but the
+    // generator's dashboard line is the "Open" section's rebase checkbox, which is never ticked.
+    const closedBefore = {
+      ...generatorPr,
+      state: 'closed',
+      created_at: daysAgo(30),
+      closed_at: daysAgo(17),
+      updated_at: daysAgo(17),
+    };
+    const github = githubWith({ pulls: [closedBefore] });
     const result = recreate({ repository, cwd: repo }, { github, out: () => {} });
     expect(result.reopened).toEqual([]);
     expect(result.ticked).toEqual(['typescript']);
@@ -295,14 +324,21 @@ describe('recreate', () => {
       title: 'chore(deps): update dependency jsdom to v30',
       head: { ref: 'renovate/jsdom-30.x' },
       created_at: daysAgo(1),
+      updated_at: daysAgo(1),
     }));
     const github = fakeGithub({
       [routes.pulls(1)]: fullPage,
       // typescript was lifted 20 days ago, the oldest lift: its PR from 18 days ago counts; the page ends
-      // with a PR older than every lift, so no third page is read.
+      // with a PR last updated before every lift, so no third page is read.
       [routes.pulls(2)]: [
-        { ...generatorPr, title: 'fix(deps): update dependency typescript to v7', created_at: daysAgo(18) },
-        { ...generatorPr, created_at: daysAgo(25) },
+        {
+          ...generatorPr,
+          title: 'fix(deps): update dependency typescript to v7',
+          head: { ref: 'renovate/typescript-7.x' },
+          created_at: daysAgo(18),
+          updated_at: daysAgo(18),
+        },
+        { ...generatorPr, state: 'closed', created_at: daysAgo(30), closed_at: daysAgo(25), updated_at: daysAgo(25) },
       ],
       [routes.issues]: [dashboard],
     });

@@ -76,14 +76,17 @@ Every declined update carries a trip wire that brings it back:
    Renovate PR, and the test fails on it. Triage runs, and the agent reads the test's message, removes the hold
    rule and deletes the test in its fix commit. Renovate then reopens the held update. If it has opened no PR
    for it by the next monthly lift run, the lift ticks the update's "recreate" line on the Dependency
-   Dashboard.
+   Dashboard. The test carries one comment line per package whose hold it guards, ending the line, for
+   example `// renovate-doctor hold: @vite-pwa/assets-generator`; that line, in a file whose path looks like
+   a test, is how the lift finds the test to delete with an expired dated hold, and a test without it is
+   never deleted.
 2. **Dated marker** (always present, alone when nothing can be tested): the rule's description contains
    `remove after YYYY-MM-DD: <what to check>`. The monthly lift run removes every rule whose date has passed,
-   together with any condition test guarding it, in one PR on auto-merge (left for you to merge when the
-   default branch requires no checks). Renovate then retries the update, and if it still cannot be taken, it
-   fails CI and is triaged like any other. The next lift run ticks "recreate" on the Dependency Dashboard for
-   lifted holds Renovate has opened no PR for since; a PR Renovate opened and a person then closed stays
-   closed.
+   together with any condition test carrying its marker line, in one PR on auto-merge (left for you to merge
+   when the default branch requires no checks). Renovate then retries the update, and if it still cannot be
+   taken, it fails CI and is triaged like any other. The next lift run ticks "recreate" on the Dependency
+   Dashboard for lifted holds Renovate has not acted on since (no PR of its for the package opened, reopened
+   or closed); a PR Renovate opened and a person then closed stays closed.
 
 A hold rule looks like this:
 
@@ -94,6 +97,28 @@ A hold rule looks like this:
   "matchUpdateTypes": ["major"],
   "enabled": false
 }
+```
+
+And a condition test guarding it (vitest here; any runner works) looks like this:
+
+```ts
+// renovate-doctor hold: @vite-pwa/assets-generator
+// vite-plugin-pwa 1.x accepts the generator only as ^1.0.0 (Renovate PR #3886, hold PR #3890).
+import { readFileSync } from 'node:fs';
+import { expect, test } from 'vitest';
+
+const generator = '@vite-pwa/assets-generator';
+const config = JSON.parse(readFileSync('renovate.json', 'utf8'));
+const hold = config.packageRules?.find((rule) => rule.enabled === false && rule.matchPackageNames?.includes(generator));
+const plugin = JSON.parse(readFileSync('node_modules/vite-plugin-pwa/package.json', 'utf8'));
+
+test.skipIf(!hold)('vite-plugin-pwa still accepts the generator only at v1', () => {
+  expect(
+    plugin.peerDependencies?.[generator],
+    `vite-plugin-pwa ${plugin.version} now accepts another generator range. If it accepts v2, remove the hold ` +
+      `rule for ${generator} from renovate.json and delete this test in the same commit.`,
+  ).toMatch(/^\^1\.\d+\.\d+$/);
+});
 ```
 
 ### The gate

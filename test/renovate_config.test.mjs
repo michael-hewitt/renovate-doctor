@@ -5,7 +5,13 @@ import path from 'node:path';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { createGitGrep, findConditionTests, isValidIsoDate, removeExpiredRules } from '../lib/renovate_config.mjs';
+import {
+  createGitGrep,
+  findConditionTests,
+  holdMarker,
+  isValidIsoDate,
+  removeExpiredRules,
+} from '../lib/renovate_config.mjs';
 
 // webapp_renovate.json is crescendosw/webapp's real config: two disabled rules, neither with a marker (one
 // has a prose description). renovate_holds.json has one hold of each kind: expired, expiring today, in the
@@ -176,21 +182,23 @@ describe('removeExpiredRules', () => {
 });
 
 describe('findConditionTests', () => {
-  // A real repository, so the git grep pathspecs are exercised as the lift runs them.
+  // A real repository, so the git grep pathspecs and the pattern are exercised as the lift runs them. The
+  // marked hold test is webapp's real one with the marker line added; the unmarked copy names the package
+  // and reads renovate.json exactly as the real one does, and must not be found.
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'renovate-doctor-conditions-'));
   const files = {
     'renovate.json': holdsConfig,
     'package.json': '{ "devDependencies": { "@vite-pwa/assets-generator": "^1.0.0" } }\n',
-    'client/src/util/test/pwa_assets_generator_hold.test.ts': holdTest,
-    'client/vite.config.ts': '// pwaAssets loads @vite-pwa/assets-generator at build time.\nexport default {};\n',
-    'docs/holds.md': "The '@vite-pwa/assets-generator' hold lives in packageRules.\n",
-    'docs/notes.md': "'eslint' is held in renovate.json.\n",
-    'tools/__tests__/eslint_hold.js': "// Reads renovate.json for the 'eslint' hold.\n",
-    'tools/Eslint.Spec.ts': '// Reads packageRules for the "eslint" hold.\n',
-    'tools/test/unquoted.test.js': '// Reads packageRules for the eslint hold, naming it unquoted.\n',
-    'client/test/vite_plugin_pwa_hold.test.ts': "const name = 'vite-plugin-pwa'; // read from renovate.json\n",
-    'client/test/vite_hold.test.ts': 'const name = "vite"; // read from packageRules\n',
-    'node_modules/@vite-pwa/assets-generator/README.md': '@vite-pwa/assets-generator, see renovate.json\n',
+    'client/src/util/test/pwa_assets_generator_hold.test.ts': `// ${holdMarker('@vite-pwa/assets-generator')}\n${holdTest}`,
+    'client/src/util/test/unmarked_hold.test.ts': holdTest,
+    'docs/holds.md': `Write \`// ${holdMarker('@vite-pwa/assets-generator')}\` in the test.\n`,
+    'tools/__tests__/eslint_hold.js': '// renovate-doctor hold: eslint\n',
+    'tools/Eslint.Spec.ts': '/* renovate-doctor hold: eslint */\n',
+    'tools/test/eslint_plugin.test.js': '// renovate-doctor hold: eslint-plugin-react\n',
+    'client/test/vite_plugin_pwa_hold.test.ts': '// renovate-doctor hold: vite-plugin-pwa\n',
+    'client/test/vite_hold.test.py': '# renovate-doctor hold: vite\n',
+    'client/test/two_holds.test.js': '// renovate-doctor hold: left-pad\n// renovate-doctor hold: right-pad\n',
+    'node_modules/@vite-pwa/assets-generator/test/x.test.js': `// ${holdMarker('@vite-pwa/assets-generator')}\n`,
   };
   for (const [file, content] of Object.entries(files)) {
     fs.mkdirSync(path.join(repo, path.dirname(file)), { recursive: true });
@@ -202,31 +210,30 @@ describe('findConditionTests', () => {
 
   const gitGrep = createGitGrep(repo);
 
-  it("finds webapp's real hold test, and not a file that only names the package, the config or node_modules", () => {
+  it('finds the test carrying the marker, and not one that only quotes the package, a doc page or node_modules', () => {
     expect(findConditionTests('@vite-pwa/assets-generator', { gitGrep })).toEqual([
       'client/src/util/test/pwa_assets_generator_hold.test.ts',
     ]);
   });
 
-  it('ignores a doc page naming the package and packageRules, and still finds the hold test', () => {
-    const found = findConditionTests('@vite-pwa/assets-generator', { gitGrep });
-    expect(found).not.toContain('docs/holds.md');
-    expect(found).toContain('client/src/util/test/pwa_assets_generator_hold.test.ts');
-  });
-
-  it('takes a test directory or a .test./.spec. name, in any case, as a test-looking path', () => {
+  it('takes a test directory or a .test./.spec. name, in any case, and a marker inside a block comment', () => {
     expect(findConditionTests('eslint', { gitGrep })).toEqual([
       'tools/Eslint.Spec.ts',
       'tools/__tests__/eslint_hold.js',
     ]);
   });
 
-  it('matches the package name only as a quoted string, never inside a longer name', () => {
-    expect(findConditionTests('vite', { gitGrep })).toEqual(['client/test/vite_hold.test.ts']);
+  it("never takes the marker for a longer name, nor a test naming the held package as the other side's peer", () => {
+    expect(findConditionTests('vite', { gitGrep })).toEqual(['client/test/vite_hold.test.py']);
     expect(findConditionTests('vite-plugin-pwa', { gitGrep })).toEqual(['client/test/vite_plugin_pwa_hold.test.ts']);
   });
 
-  it('finds nothing for a package no file names', () => {
-    expect(findConditionTests('left-pad', { gitGrep })).toEqual([]);
+  it('finds a test guarding two holds for each of them', () => {
+    expect(findConditionTests('left-pad', { gitGrep })).toEqual(['client/test/two_holds.test.js']);
+    expect(findConditionTests('right-pad', { gitGrep })).toEqual(['client/test/two_holds.test.js']);
+  });
+
+  it('finds nothing for a package no test carries the marker for', () => {
+    expect(findConditionTests('typescript', { gitGrep })).toEqual([]);
   });
 });
