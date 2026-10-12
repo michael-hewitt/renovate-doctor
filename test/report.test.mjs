@@ -146,6 +146,25 @@ describe('compose, in triage mode', () => {
     expect(message?.comment).toBe(formatComment(pr.headSha, 'escalated', exhaustedSummary));
   });
 
+  it.each([
+    ['failure', 'failed'],
+    ['cancelled', 'was cancelled'],
+  ])('emails a triage job that ended in %s before the gate ran', (triageResult, how) => {
+    const input = triage({ agentOutcome: '', triageResult, pr: {} });
+    const message = compose(input);
+    expect(message?.subject).toBe('[renovate-doctor] failed: triage job');
+    expect(message?.text).toMatch(new RegExp(`^The run failed: the triage job ${how} before the gate ran`));
+    expect(message?.text).toContain(`Run: ${runUrl}`);
+    expect(message?.comment).toBeUndefined();
+    // Once the gate has run, a later failure is the agent's or a setup step's, not this one.
+    const afterGate = triage({
+      agentOutcome: 'skipped',
+      triageResult,
+      gate: { outcome: '', summary: '', reason: 'launched' },
+    });
+    expect(compose(afterGate)?.text).toMatch(/^The run failed: the agent did not run, because a step before it/);
+  });
+
   it('names the PR by number when it has no title', () => {
     const message = compose(triage({ agentOutcome: 'failure', pr: { ...pr, title: '' } }));
     expect(message?.subject).toBe('[renovate-doctor] failed: PR #3814');

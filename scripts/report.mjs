@@ -3,8 +3,8 @@
 // The only step of the workflow's `report` job, which runs after the triage or lift job, on a GitHub-hosted
 // runner, from a fresh checkout of this repository: the mail key never shares a job with the install or
 // the agent. In triage mode it runs whenever the gate launched the agent or produced an outcome itself,
-// and reads the outcome file the triage job handed over as an artifact; in lift mode it always runs. It
-// reads no file from the caller's repository. The rules are the report contract in
+// and when the triage job failed before the gate ran; it reads the outcome file the triage job handed over
+// as an artifact. In lift mode it always runs. It reads no file from the caller's repository. The rules are the report contract in
 // docs/architecture.md: a `merged` or `rerun` outcome is silent unless the agent asked for a mention, and
 // a `skipped` one (the PR moved on before the agent acted) is always silent; everything else (declined,
 // escalated, a run that failed, an agent that wrote no or a malformed outcome file) is one plain-text
@@ -15,7 +15,8 @@
 // nothing had expired.
 //
 // Environment: REPORT_MODE (`triage`/`lift`), OUTCOME_FILE, AGENT_OUTCOME (the agent step's outcome:
-// `success`/`failure`/`cancelled`/`skipped`), GATE_OUTCOME, GATE_SUMMARY, GATE_REASON, DRY_RUN
+// `success`/`failure`/`cancelled`/`skipped`), TRIAGE_RESULT (the triage job's result; with no gate output
+// at all, `failure` or `cancelled` means the job broke before the gate ran, which is emailed), GATE_OUTCOME, GATE_SUMMARY, GATE_REASON, DRY_RUN
 // (`true`/`false`), PR_NUMBER, PR_URL, PR_TITLE, HEAD_SHA, RUN_URL, GITHUB_REPOSITORY, GH_TOKEN (read by
 // `gh`), EMAIL_TO, EMAIL_FROM, EMAIL_FROM_NAME, MANDRILL_API_KEY; for lift mode LIFT_OUTCOME
 // (`opened`/`nothing`/`blocked`/`failure`), LIFT_PR_URL, LIFT_SUMMARY.
@@ -40,6 +41,7 @@ import { handledMarker } from './gate.mjs';
  *   mode: 'triage' | 'lift' | string,
  *   outcome?: { exists: false } | { exists: true, parsed: ParsedOutcome },
  *   agentOutcome?: string,
+ *   triageResult?: string,
  *   gate?: { outcome?: string, summary?: string, reason?: string },
  *   pr?: { number?: number | string, url?: string, title?: string, headSha?: string },
  *   runUrl?: string,
@@ -55,6 +57,7 @@ import { handledMarker } from './gate.mjs';
  *   email: boolean,
  *   fromGate: boolean,
  *   why: string,
+ *   beforeGate?: boolean,
  * }} Resolution
  *
  * @typedef {{ subject: string, text: string, comment?: string }} Message
@@ -88,8 +91,26 @@ export function formatComment(headSha, outcome, summary) {
  * @param {ReportInput} input
  * @returns {Resolution}
  */
-export function resolveTriage({ outcome: file = { exists: false }, agentOutcome = '', gate = {} }) {
+export function resolveTriage({ outcome: file = { exists: false }, agentOutcome = '', triageResult = '', gate = {} }) {
   const agentRan = agentOutcome !== 'skipped' && agentOutcome !== '';
+  // The gate always writes a reason, so none (and no outcome from it) means the triage job broke before the
+  // gate ran: a checkout, a Node setup, a misspelt package_manager, a lost runner. Without this the run
+  // would be red and silent on every Renovate failure until someone looked.
+  const failedEarly = triageResult === 'failure' || triageResult === 'cancelled';
+  if (failedEarly && !gate.reason && !gate.outcome && !agentRan && !file.exists) {
+    const how = triageResult === 'failure' ? 'failed' : 'was cancelled';
+    return {
+      outcome: 'failed',
+      summary:
+        `The run failed: the triage job ${how} before the gate ran, so no PR was looked at. The run log says ` +
+        'which step; a mistake in the caller workflow (an input, the runner label) fails every run the same way.',
+      links: {},
+      email: true,
+      fromGate: false,
+      why: `failed: the triage job ${how} before the gate ran`,
+      beforeGate: true,
+    };
+  }
   if (gate.outcome && !agentRan) {
     const reason = gate.reason ? ` (${gate.reason})` : '';
     return {
@@ -174,7 +195,7 @@ function composeTriage(input) {
   const resolution = resolveTriage(input);
   if (!resolution.email) return undefined;
   const { pr = {}, runUrl, repository } = input;
-  const title = pr.title || (pr.number ? `PR #${pr.number}` : 'an unknown PR');
+  const title = pr.title || (pr.number ? `PR #${pr.number}` : resolution.beforeGate ? 'triage job' : 'an unknown PR');
   const links = [`PR: ${linkOrUnknown(pr.url, 'PR URL')}`, `Run: ${linkOrUnknown(runUrl, 'run URL')}`];
   if (resolution.links.config_pr) links.push(`Config PR: ${resolution.links.config_pr}`);
   /** @type {Message} */
@@ -275,6 +296,7 @@ export function readInput(env) {
     mode,
     outcome: mode === 'triage' ? readOutcomeFile(env.OUTCOME_FILE) : { exists: false },
     agentOutcome: env.AGENT_OUTCOME ?? '',
+    triageResult: env.TRIAGE_RESULT ?? '',
     gate: { outcome: env.GATE_OUTCOME ?? '', summary: env.GATE_SUMMARY ?? '', reason: env.GATE_REASON ?? '' },
     pr: { number: env.PR_NUMBER ?? '', url: env.PR_URL ?? '', title: env.PR_TITLE ?? '', headSha: env.HEAD_SHA ?? '' },
     runUrl: env.RUN_URL ?? '',
