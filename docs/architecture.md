@@ -106,9 +106,10 @@ a dry run; the outcome file path; and the rerun-workflow name if any.
 
 ### Lift job
 
-1. Check out the caller's default branch and this repository; setup node.
-2. `node .renovate-doctor/scripts/dashboard-recreate.mjs`: for every hold lifted by a lift PR merged in the
-   last 60 days whose package has no open Renovate PR, tick the Dependency Dashboard checkbox naming it.
+1. Check out the caller's default branch (`fetch-depth: 0`: the next step reads the config's history) and
+   this repository; setup node.
+2. `node .renovate-doctor/scripts/dashboard-recreate.mjs`: for every hold lifted from the config in the last
+   60 days whose package has no open Renovate PR, tick the Dependency Dashboard checkbox naming it.
 3. `node .renovate-doctor/scripts/lift.mjs`: remove expired holds and open the config PR with auto-merge.
 4. Email (through `report.mjs` in lift mode): one email when a PR was opened or the step failed; none when
    nothing had expired.
@@ -210,10 +211,16 @@ per line and carries `<!-- renovate-doctor lift -->`, squash auto-merge enabled.
 job, or a create whose answer was lost), that PR is reused: nothing is pushed again, auto-merge is enabled on
 it, and its URL is the output.
 
-`dashboard-recreate.mjs`: merged PRs carrying the lift marker (last 60 days) give the lifted packages; a
-package with no open PR by `renovate[bot]` whose title or branch names it is looked up on the Dependency
-Dashboard issue (title `Dependency Dashboard`, author `renovate[bot]`); every unchecked `- [ ]` line that
-names the package is ticked and the body is saved once. Idempotent; `--dry-run` prints what it would tick.
+`dashboard-recreate.mjs`: the lifted packages come from the config's git history, which covers both ways a
+hold is lifted (a lift PR, and the agent's fix commit on a Renovate PR a condition test fired on): for every
+commit on the default branch in the last 60 days that touched the config (`RENOVATE_CONFIG`, default
+`renovate.json`; `git log --first-parent --since`), a package named by an `enabled: false` rule before the
+commit and by none after it was lifted, unless the current config holds it again; a commit whose config
+before or after is not valid JSON is skipped. The `Lifted holds:` lines in a lift PR body are for people,
+not a source. A lifted package with no open PR by `renovate[bot]` whose title or branch names it is looked
+up on the Dependency Dashboard issue (title `Dependency Dashboard`, author `renovate[bot]`); every unchecked
+`- [ ]` line that names the package is ticked and the body is saved once. Idempotent; `--dry-run` prints
+what it would tick.
 
 ## The agent on GitHub
 

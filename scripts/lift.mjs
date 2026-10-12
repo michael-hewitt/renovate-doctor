@@ -15,6 +15,11 @@
 // Environment: GITHUB_REPOSITORY, GH_TOKEN (read by `gh`), GITHUB_OUTPUT, RENOVATE_CONFIG (the config's
 // path in the checkout, default `renovate.json`). The push uses the checkout's own credentials.
 //
+// It must run with a token whose pushes start workflows - the Claude GitHub App token, which
+// `claude-code-action` exports as GH_TOKEN when the script runs from inside it - because pushes and PRs
+// made with GITHUB_TOKEN never trigger CI, so the PR's required checks would never run and auto-merge
+// would wait forever.
+//
 // Outputs (`$GITHUB_OUTPUT`): `opened` (`true`/`false`), `pr_url`, `packages` (comma-separated), `summary`
 // (one line, for the email subject). The commit is authored by the git identity the checkout already has;
 // when none is set it is `renovate-doctor[bot] <noreply@github.com>`. On GitHub, the token that pushes and
