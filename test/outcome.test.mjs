@@ -25,6 +25,14 @@ describe('parseOutcome', () => {
     expect(parse({ outcome, summary: 'Done.' })).toMatchObject({ ok: true, outcome: { outcome } });
   });
 
+  it('accepts skipped, for a PR that moved on before the agent acted, without a classification', () => {
+    const summary = 'Renovate pushed a new head (9f8e7d6) before the agent acted; the run on that head decides.';
+    expect(parse({ outcome: 'skipped', summary })).toEqual({
+      ok: true,
+      outcome: { outcome: 'skipped', summary, mention: false, links: {} },
+    });
+  });
+
   it('defaults mention to false and links to an empty object, and leaves classification out when absent', () => {
     const result = parse({ outcome: 'rerun', summary: '  The network stalled during install.\n' });
     expect(result).toEqual({
@@ -53,11 +61,11 @@ describe('parseOutcome', () => {
 
   it('reports an unknown outcome and a missing one', () => {
     expect(parse({ ...declined, outcome: 'fixed' }).problems).toEqual([
-      '"outcome" is "fixed"; it must be one of merged, rerun, declined, escalated',
+      '"outcome" is "fixed"; it must be one of merged, rerun, declined, escalated, skipped',
     ]);
     const { outcome: _, ...withoutOutcome } = declined;
     expect(parse(withoutOutcome).problems).toEqual([
-      '"outcome" is undefined; it must be one of merged, rerun, declined, escalated',
+      '"outcome" is undefined; it must be one of merged, rerun, declined, escalated, skipped',
     ]);
   });
 

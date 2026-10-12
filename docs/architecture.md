@@ -151,7 +151,7 @@ Written by the agent, read by the report step. `lib/outcome.mjs` validates it.
 
 ```json
 {
-  "outcome": "merged | rerun | declined | escalated",
+  "outcome": "merged | rerun | declined | escalated | skipped",
   "classification": "unrelated | fixable | not-takeable | needs-human",
   "summary": "One paragraph, plain text, written for the email: what failed, why, what was done.",
   "mention": false,
@@ -159,9 +159,11 @@ Written by the agent, read by the report step. `lib/outcome.mjs` validates it.
 }
 ```
 
-`mention: true` on `merged` or `rerun` asks for an email anyway. `links` holds only what exists; the PR and
-run links come from the workflow, not the agent. `merged` means auto-merge is enabled and the agent's fix
-passed typecheck and tests locally; the merge itself waits for CI.
+`mention: true` on `merged` or `rerun` asks for an email anyway. `skipped` means the PR closed or Renovate
+pushed a new head before the agent acted (or before its push landed): no comment, no classification, no
+email. `links` holds only what exists; the PR and run links come from the workflow, not the agent. `merged`
+means auto-merge is enabled and the agent's fix passed typecheck and tests locally; the merge itself waits
+for CI.
 
 ## Report contract (`scripts/report.mjs`)
 
@@ -171,13 +173,14 @@ Environment: `REPORT_MODE` (`triage`/`lift`), `OUTCOME_FILE`, `AGENT_OUTCOME` (t
 `EMAIL_FROM`, `EMAIL_FROM_NAME`, `MANDRILL_API_KEY`; for lift: `LIFT_OUTCOME` (`opened`/`nothing`/`failure`),
 `LIFT_PR_URL`, `LIFT_SUMMARY`.
 
-Rules: no email for `merged` or `rerun` without `mention`; otherwise one plain-text email. No outcome file
-and an agent step that failed or was cancelled → outcome `failed` ("the run failed", with the run link); no
-outcome file and a successful agent step → `escalated` ("the agent wrote no outcome"). When the gate produced
-the outcome (attempts exhausted) the report also posts the PR comment, with the sha marker, since no agent
-ran. Subject: `[renovate-doctor] <outcome>: <PR title>`; body: the summary, then `PR:`, `Run:` and, when
-present, `Config PR:` links, then one line naming the repository. Dry run prints `Subject:` and the body to
-stdout and sends nothing. A refused send fails the step (the email is the product of a non-merged run).
+Rules: no email for `merged` or `rerun` without `mention`, and never for `skipped`; otherwise one plain-text
+email. No outcome file and an agent step that failed or was cancelled → outcome `failed` ("the run failed",
+with the run link); no outcome file and a successful agent step → `escalated` ("the agent wrote no
+outcome"). When the gate produced the outcome (attempts exhausted) the report also posts the PR comment,
+with the sha marker, since no agent ran. Subject: `[renovate-doctor] <outcome>: <PR title>`; body: the
+summary, then `PR:`, `Run:` and, when present, `Config PR:` links, then one line naming the repository. Dry
+run prints `Subject:` and the body to stdout and sends nothing. A refused send fails the step (the email is
+the product of a non-merged run).
 
 ## Lift contract (`scripts/lift.mjs`, `lib/renovate_config.mjs`)
 
