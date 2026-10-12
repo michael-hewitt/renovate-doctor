@@ -2,9 +2,10 @@
 //
 // The triage job's last step, run `if: always()` whenever the gate launched the agent or produced an
 // outcome itself; the lift job runs it too, in lift mode. The rules are the report contract in
-// docs/architecture.md: a `merged` or `rerun` outcome is silent unless the agent asked for a mention;
-// everything else (declined, escalated, a run that failed, an agent that wrote no or a malformed outcome
-// file) is one plain-text email through Mandrill. When the gate produced the outcome (fix attempts
+// docs/architecture.md: a `merged` or `rerun` outcome is silent unless the agent asked for a mention, and
+// a `skipped` one (the PR moved on before the agent acted) is always silent; everything else (declined,
+// escalated, a run that failed, an agent that wrote no or a malformed outcome file) is one plain-text
+// email through Mandrill. When the gate produced the outcome (fix attempts
 // exhausted) no agent ran, so this step also posts the PR comment, with the sha marker, on the gate's
 // behalf. In lift mode it emails when a config PR was opened or the lift failed, and is silent when
 // nothing had expired.
@@ -61,6 +62,12 @@ const subjectPrefix = '[renovate-doctor]';
 const quietOutcomes = ['merged', 'rerun'];
 
 /**
+ * The outcomes that never email: the PR closed or Renovate pushed a new head before the agent acted, so
+ * there is nothing to tell, and the run on the new head speaks for itself.
+ */
+const silentOutcomes = ['skipped'];
+
+/**
  * The PR comment the report posts when the gate produced the outcome, in the form every renovate-doctor
  * comment takes: the sha marker on its own line (which the gate's "not handled" check looks for), a bold
  * heading, the outcome, and the summary.
@@ -93,6 +100,9 @@ export function resolveTriage({ outcome: file = { exists: false }, agentOutcome 
 
   if (file.exists && file.parsed.ok) {
     const { outcome, summary, mention, links } = file.parsed.outcome;
+    if (silentOutcomes.includes(outcome)) {
+      return { outcome, summary, links, email: false, fromGate: false, why: `${outcome}, from the outcome file` };
+    }
     const email = !quietOutcomes.includes(outcome) || mention;
     let why = `${outcome}, from the outcome file`;
     if (quietOutcomes.includes(outcome)) why += mention ? ', and the agent asked for a mention' : ', with no mention';

@@ -50,6 +50,12 @@ describe('compose, in triage mode', () => {
     expect(message?.subject).toBe(`[renovate-doctor] ${outcome}: ${pr.title}`);
   });
 
+  it.each([false, true])('is always silent for skipped, even with mention %s', (mention) => {
+    const input = triage({ outcome: file({ outcome: 'skipped', summary: 'The PR was closed.', mention }) });
+    expect(compose(input)).toBeUndefined();
+    expect(explain(input)).toBe('skipped, from the outcome file; no email');
+  });
+
   it.each([
     ['declined', false],
     ['declined', true],
