@@ -6,11 +6,36 @@
 # It is a dry run against this repository's own PR #2, which has no failed run, so the gate stops at once
 # and nothing is launched; the secrets are empty here (the repository holds none), which `required: true`
 # does not check. Only the workflow's validity and the gate's and report's wiring are exercised.
+#
+# The `workflow_dispatch` trigger is the README caller's, so the manual path is checked too, by hand
+# (`gh workflow run selftest.yml --ref <branch> -f pr=2`): a run that fails with no jobs and "workflow file
+# issue" is the kind of error only this path produces. The `number` inputs of a `workflow_dispatch` reach
+# the `inputs` context as strings ("2"), and a reusable workflow's `type: number` input rejects a string at
+# run creation, before any job exists, so the caller wraps them in `fromJSON` (see the README).
 
 name: Self-test the reusable workflow
 
 on:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'triage (a PR) or lift (expired holds)'
+        type: choice
+        options: [triage, lift]
+        default: triage
+      pr:
+        description: 'PR number to triage'
+        type: number
+        default: 2
+      run_id:
+        description: 'Failed run to triage (0 = the failed runs on the PR head)'
+        type: number
+        default: 0
+      dry_run:
+        description: 'Change nothing; print the email instead of sending it'
+        type: boolean
+        default: true
 
 jobs:
   call:
@@ -22,10 +47,12 @@ jobs:
       id-token: write
     uses: ./.github/workflows/renovate-doctor.yml
     with:
-      mode: triage
+      mode: ${{ inputs.mode || 'triage' }}
       email_to: nobody@example.com
       email_from: nobody@example.com
-      pr: 2
+      pr: ${{ fromJSON(inputs.pr || '2') }}
+      run_id: ${{ fromJSON(inputs.run_id || '0') }}
+      # Always a dry run: this repository has no secrets, and nothing here is to be changed.
       dry_run: true
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
