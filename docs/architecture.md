@@ -286,12 +286,17 @@ line, and the body is saved once. Idempotent; `--dry-run` prints what it would t
   on its own line, then a bold `renovate-doctor` heading, the outcome, and two to six sentences.
 - A fix commit's message: `fix(deps): <what> so that <PR title> passes (#<pr>)` - conventional, naming the PR.
   Never `--force`; never amend a Renovate commit.
-- `merged`: `gh pr merge <n> --auto --squash` after push and comment.
+- The agent reads GitHub through `gh` subcommands (`gh pr view`, `gh pr checks`, `gh pr list`, `gh run list`,
+  `gh run view`); its only `gh api` calls are the two required-checks GETs, which a dry run blocks.
+- `merged`: `gh pr merge <n> --auto --squash` after push, only when the default branch requires checks (the
+  same reading as the lift's "Required checks"); with none required, the fix stays pushed without
+  auto-merge and the outcome is `escalated`.
 - `rerun`: `gh run rerun <id> --failed`, once.
 - `declined`: branch `renovate-doctor/hold-<package>` from the default branch; a rule
   `{ "description": "<blocker>. remove after <date>: <what to check>", "matchPackageNames": [...], "matchUpdateTypes": [...], "enabled": false }`;
-  the condition test where the notes file says tests go; PR with `<!-- renovate-doctor hold -->`, auto-merge.
-  The Renovate PR is never closed by hand.
+  the condition test where the notes file says tests go; PR with `<!-- renovate-doctor hold -->`, auto-merge
+  when the default branch requires checks. An open hold PR for the package is reused, never doubled; a
+  leftover branch with no open PR is deleted and pushed fresh. The Renovate PR is never closed by hand.
 - Before claiming `merged`, the agent checks the PR's other checks: a pending visual-snapshot check (Chromatic's
   `UI Tests` and the like) with unaccepted changes means `escalated`, never an approval.
 - The agent looks at every failed run on the head SHA, not only the triggering one.
