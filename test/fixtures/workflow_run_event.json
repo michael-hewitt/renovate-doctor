@@ -1,0 +1,85 @@
+{
+  "action": "completed",
+  "workflow_run": {
+    "id": 37993773276,
+    "name": "Node.js CI",
+    "node_id": "WFR_kwLOE0tHHs8AAAAI2Jr43A",
+    "head_branch": "renovate/vite-plugin-pwa-2.x",
+    "head_sha": "457ec6c5b51041158be71b2f26907c052d8fe7e9",
+    "path": ".github/workflows/node.js.yml",
+    "display_title": "chore(deps): update dependency vite-plugin-pwa to v2",
+    "run_number": 12525,
+    "event": "pull_request",
+    "status": "completed",
+    "conclusion": "failure",
+    "workflow_id": 36829632,
+    "check_suite_id": 102947796488,
+    "url": "https://api.github.com/repos/crescendosw/webapp/actions/runs/37993773276",
+    "html_url": "https://github.com/crescendosw/webapp/actions/runs/37993773276",
+    "pull_requests": [],
+    "created_at": "2026-10-09T21:29:39Z",
+    "updated_at": "2026-10-09T21:46:26Z",
+    "actor": {
+      "login": "renovate[bot]",
+      "id": 29139614,
+      "type": "Bot"
+    },
+    "run_attempt": 1,
+    "run_started_at": "2026-10-09T21:29:39Z",
+    "triggering_actor": {
+      "login": "renovate[bot]",
+      "id": 29139614,
+      "type": "Bot"
+    },
+    "jobs_url": "https://api.github.com/repos/crescendosw/webapp/actions/runs/37993773276/jobs",
+    "logs_url": "https://api.github.com/repos/crescendosw/webapp/actions/runs/37993773276/logs",
+    "head_commit": {
+      "id": "457ec6c5b51041158be71b2f26907c052d8fe7e9",
+      "tree_id": "c8be54194ec22bf5ffe159d8d26d7a076b3828e8",
+      "message": "chore(deps): update dependency vite-plugin-pwa to v2",
+      "timestamp": "2026-10-09T21:29:32Z",
+      "author": {
+        "name": "renovate[bot]",
+        "email": "29139614+renovate[bot]@users.noreply.github.com"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com"
+      }
+    },
+    "repository": {
+      "id": 323700510,
+      "name": "webapp",
+      "full_name": "crescendosw/webapp",
+      "owner": {
+        "login": "crescendosw",
+        "type": "Organization"
+      }
+    },
+    "head_repository": {
+      "id": 323700510,
+      "full_name": "crescendosw/webapp"
+    }
+  },
+  "workflow": {
+    "id": 36829632,
+    "name": "Node.js CI",
+    "path": ".github/workflows/node.js.yml",
+    "state": "active"
+  },
+  "repository": {
+    "id": 323700510,
+    "name": "webapp",
+    "full_name": "crescendosw/webapp",
+    "owner": {
+      "login": "crescendosw",
+      "type": "Organization"
+    },
+    "default_branch": "main"
+  },
+  "sender": {
+    "login": "renovate[bot]",
+    "id": 29139614,
+    "type": "Bot"
+  }
+}

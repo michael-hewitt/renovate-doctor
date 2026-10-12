@@ -1,0 +1,43 @@
+{
+  "total_count": 1,
+  "jobs": [
+    {
+      "id": 114034413478,
+      "run_id": 37993773276,
+      "workflow_name": "Node.js CI",
+      "head_branch": "renovate/vite-plugin-pwa-2.x",
+      "run_url": "https://api.github.com/repos/crescendosw/webapp/actions/runs/37993773276",
+      "run_attempt": 1,
+      "head_sha": "457ec6c5b51041158be71b2f26907c052d8fe7e9",
+      "html_url": "https://github.com/crescendosw/webapp/actions/runs/37993773276/job/114034413478",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-10-09T21:29:39Z",
+      "started_at": "2026-10-09T21:36:43Z",
+      "completed_at": "2026-10-09T21:46:26Z",
+      "name": "build",
+      "steps": [
+        {
+          "name": "Run pnpm test",
+          "status": "completed",
+          "conclusion": "failure",
+          "number": 9
+        },
+        {
+          "name": "Verify clean working copy.",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10
+        },
+        {
+          "name": "Post Setup Node.js",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 18
+        }
+      ],
+      "labels": ["self-hosted", "automation"],
+      "runner_name": "automation-server-2"
+    }
+  ]
+}

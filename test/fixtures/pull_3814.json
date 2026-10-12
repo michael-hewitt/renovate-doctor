@@ -1,0 +1,52 @@
+{
+  "url": "https://api.github.com/repos/crescendosw/webapp/pulls/3814",
+  "id": 4735198503,
+  "html_url": "https://github.com/crescendosw/webapp/pull/3814",
+  "number": 3814,
+  "state": "closed",
+  "locked": false,
+  "title": "chore(deps): update dependency vite-plugin-pwa to v2",
+  "user": {
+    "login": "renovate[bot]",
+    "id": 29139614,
+    "type": "Bot"
+  },
+  "labels": [],
+  "created_at": "2026-10-04T14:46:52Z",
+  "updated_at": "2026-10-10T00:30:55Z",
+  "closed_at": "2026-10-10T00:30:54Z",
+  "merged_at": "2026-10-10T00:30:54Z",
+  "merge_commit_sha": "25212287994bf023701f73d6a290a6aeba2a4843",
+  "draft": false,
+  "head": {
+    "label": "crescendosw:renovate/vite-plugin-pwa-2.x",
+    "ref": "renovate/vite-plugin-pwa-2.x",
+    "sha": "eb80467863d45cc6911af0a24542254f5c48bffe",
+    "user": {
+      "login": "crescendosw"
+    }
+  },
+  "base": {
+    "label": "crescendosw:main",
+    "ref": "main",
+    "sha": "70dcb52984f4e22048e3539274f2da8baf5b647e",
+    "user": {
+      "login": "crescendosw"
+    }
+  },
+  "author_association": "NONE",
+  "auto_merge": {
+    "enabled_by": {
+      "login": "renovate[bot]",
+      "id": 29139614,
+      "type": "Bot"
+    },
+    "merge_method": "squash",
+    "commit_title": "chore(deps): update dependency vite-plugin-pwa to v2 (#3814)",
+    "commit_message": null
+  },
+  "merged": true,
+  "mergeable_state": "unknown",
+  "comments": 0,
+  "commits": 1
+}

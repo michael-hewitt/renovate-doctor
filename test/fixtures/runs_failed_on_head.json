@@ -1,0 +1,19 @@
+{
+  "total_count": 1,
+  "workflow_runs": [
+    {
+      "id": 37993773276,
+      "name": "Node.js CI",
+      "head_branch": "renovate/vite-plugin-pwa-2.x",
+      "head_sha": "457ec6c5b51041158be71b2f26907c052d8fe7e9",
+      "path": ".github/workflows/node.js.yml",
+      "run_number": 12525,
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "failure",
+      "workflow_id": 36829632,
+      "html_url": "https://github.com/crescendosw/webapp/actions/runs/37993773276",
+      "run_attempt": 1
+    }
+  ]
+}
