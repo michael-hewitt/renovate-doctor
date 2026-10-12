@@ -188,14 +188,19 @@ two-space JSON formatting; a rule whose date is not a valid ISO date is reported
 rules without a marker are untouched. Packages come from `matchPackageNames`, `matchDepNames` and
 `matchPackagePatterns`.
 
-A **condition test** guarding a hold is any tracked file outside `node_modules` whose text contains the
-package name and either `renovate.json` or `packageRules` (`git grep -l`); `lift.mjs` deletes it with the rule.
+A **condition test** guarding a hold is a tracked file outside `node_modules` whose path looks like a test (a
+`test`, `tests`, `__tests__` or `spec` directory, or `.test.`/`.spec.` in the name, any case) and whose text
+contains the package name and either `renovate.json` or `packageRules` (`git grep -l`); `lift.mjs` deletes it
+with the rule.
 
 `lift.mjs`: branch `renovate-doctor/lift-<YYYY-MM-DD>` from the default branch, one commit
 `chore(deps): lift expired Renovate holds (<packages>)`, push, PR whose body lists `Lifted holds:` one package
 per line and carries `<!-- renovate-doctor lift -->`, squash auto-merge enabled. `--today YYYY-MM-DD` and
 `--dry-run` (print the diff and the PR body, change nothing on GitHub). Outputs `opened` (`true`/`false`),
-`pr_url`, `packages`.
+`pr_url`, `packages`, and `summary` (one line for the email subject, e.g. `lifted 2 expired holds: foo, bar`;
+`lift failed: <why>` when the step fails). When the branch already has an open PR (a rerun of the same day's
+job, or a create whose answer was lost), that PR is reused: nothing is pushed again, auto-merge is enabled on
+it, and its URL is the output.
 
 `dashboard-recreate.mjs`: merged PRs carrying the lift marker (last 60 days) give the lifted packages; a
 package with no open PR by `renovate[bot]` whose title or branch names it is looked up on the Dependency

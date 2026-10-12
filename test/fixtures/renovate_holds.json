@@ -1,0 +1,35 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "automerge": true,
+  "packageRules": [
+    {
+      "description": "vite-plugin-pwa only accepts the generator at v1 as a peer. remove after 2026-09-30: check whether vite-plugin-pwa's peer range accepts v2",
+      "matchPackageNames": ["@vite-pwa/assets-generator"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchPackagePatterns": ["pdfjs-dist"],
+      "enabled": false
+    },
+    {
+      "description": "eslint 10 breaks the flat config of eslint-plugin-react. remove after 2026-12-01: check eslint-plugin-react's peer range",
+      "matchPackageNames": ["eslint"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "motion 15 drops the layout prop we use. remove after 2026-02-30: check the migration guide",
+      "matchPackageNames": ["motion"],
+      "enabled": false
+    },
+    {
+      "description": "typescript 7 needs the native preview of the type checker. remove after 2026-10-12: try tsgo on the client",
+      "matchPackageNames": ["typescript"],
+      "matchDepNames": ["@typescript/native-preview"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    }
+  ]
+}

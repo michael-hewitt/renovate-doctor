@@ -1,0 +1,19 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "automerge": true,
+  "automergeType": "pr",
+  "description": "minimumReleaseAge matches pnpm's default (minimumReleaseAge 1440 min, since pnpm 11): a version younger than a day is not resolvable, so a PR for one would fail its lockfile update.",
+  "minimumReleaseAge": "1 day",
+  "packageRules": [
+    {
+      "matchPackagePatterns": ["pdfjs-dist"],
+      "enabled": false
+    },
+    {
+      "description": "googleapis-common must stay on the exact range googleapis depends on (it pins google-auth-library to an exact version, so a second copy breaks the Drive client's JWT type; see #3444, #3445). Bump it by hand only when googleapis moves to a new googleapis-common major.",
+      "matchPackageNames": ["googleapis-common"],
+      "enabled": false
+    }
+  ]
+}
