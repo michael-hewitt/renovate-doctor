@@ -305,4 +305,43 @@ describe('main', () => {
     );
     expect(errors.text()).toContain('renovate-doctor lift error');
   });
+
+  it('writes the outputs and the exit code to $RUNNER_TEMP/renovate-doctor/lift.json for the next step', () => {
+    const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'renovate-doctor-lift-'));
+    roots.push(runnerTemp);
+    const resultFile = path.join(runnerTemp, 'renovate-doctor', 'lift.json');
+    const run = (argv) => {
+      const code = main({
+        argv,
+        env: { GITHUB_REPOSITORY: repository, RUNNER_TEMP: runnerTemp },
+        github: githubForNewPr(),
+        exec,
+        cwd: makeRepo().work,
+        out: () => {},
+        err: () => {},
+      });
+      return { code, result: JSON.parse(fs.readFileSync(resultFile, 'utf8')) };
+    };
+
+    expect(run(['--today', today])).toEqual({
+      code: 0,
+      result: {
+        opened: 'true',
+        pr_url: prUrl,
+        packages: '@vite-pwa/assets-generator,typescript,@typescript/native-preview',
+        summary: 'lifted 3 expired holds: @vite-pwa/assets-generator, typescript, @typescript/native-preview',
+        exit_code: 0,
+      },
+    });
+    expect(run(['--today', 'tomorrow'])).toEqual({
+      code: 1,
+      result: {
+        opened: 'false',
+        pr_url: '',
+        packages: '',
+        summary: 'lift failed: --today must be a YYYY-MM-DD date, not tomorrow',
+        exit_code: 1,
+      },
+    });
+  });
 });

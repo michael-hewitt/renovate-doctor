@@ -12,8 +12,9 @@
 //
 // Usage: node scripts/lift.mjs [--today YYYY-MM-DD] [--dry-run]
 //
-// Environment: GITHUB_REPOSITORY, GH_TOKEN (read by `gh`), GITHUB_OUTPUT, RENOVATE_CONFIG (the config's
-// path in the checkout, default `renovate.json`). The push uses the checkout's own credentials.
+// Environment: GITHUB_REPOSITORY, GH_TOKEN (read by `gh`), GITHUB_OUTPUT, RUNNER_TEMP, RENOVATE_CONFIG
+// (the config's path in the checkout, default `renovate.json`). The push uses the checkout's own
+// credentials.
 //
 // It must run with a token whose pushes start workflows - the Claude GitHub App token, which
 // `claude-code-action` exports as GH_TOKEN when the script runs from inside it - because pushes and PRs
@@ -21,7 +22,10 @@
 // would wait forever.
 //
 // Outputs (`$GITHUB_OUTPUT`): `opened` (`true`/`false`), `pr_url`, `packages` (comma-separated), `summary`
-// (one line, for the email subject). The commit is authored by the git identity the checkout already has;
+// (one line, for the email subject). The same outputs, with the script's `exit_code`, also go to
+// `$RUNNER_TEMP/renovate-doctor/lift.json` when RUNNER_TEMP is set: in the workflow the script runs inside
+// the claude-code-action step, whose `$GITHUB_OUTPUT` belongs to the action's own inner step, so the next
+// step reads the file instead. The commit is authored by the git identity the checkout already has;
 // when none is set it is `renovate-doctor[bot] <noreply@github.com>`. On GitHub, the token that pushes and
 // opens the PR decides who the PR is from. The script exits 1 when the lift failed, after writing outputs
 // whose `summary` says why.
@@ -407,6 +411,18 @@ export function main({
   } catch (error) {
     err(`renovate-doctor lift could not write $GITHUB_OUTPUT:\n${error?.stack ?? error}\n`);
     exitCode = 1;
+  }
+  if (env.RUNNER_TEMP) {
+    // The workflow's next step reads this file, not `$GITHUB_OUTPUT` (see the header); a file it cannot
+    // read is reported as a failed lift, so a failed write fails the script too.
+    const resultFile = path.join(env.RUNNER_TEMP, 'renovate-doctor', 'lift.json');
+    try {
+      fs.mkdirSync(path.dirname(resultFile), { recursive: true });
+      fs.writeFileSync(resultFile, `${JSON.stringify({ ...toOutputs(result), exit_code: exitCode }, null, 2)}\n`);
+    } catch (error) {
+      err(`renovate-doctor lift could not write ${resultFile}:\n${error?.stack ?? error}\n`);
+      exitCode = 1;
+    }
   }
   return exitCode;
 }
