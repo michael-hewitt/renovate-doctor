@@ -2,10 +2,12 @@
 #
 # Triage mode runs when one of the caller's CI workflows fails on a Renovate PR: the gate decides whether
 # the failure gets the agent, the agent (Claude Code, following skills/renovate-doctor/SKILL.md) fixes and
-# auto-merges it, reruns it, declines it with a trip wire or escalates it, and the report step sends the one
-# email a run produces, or stays silent. Lift mode runs monthly: it ticks the Dependency Dashboard for holds
-# lifted earlier that Renovate has not reopened, then removes the holds whose date has passed in one
-# auto-merged PR, and emails when it opened one or failed.
+# auto-merges it, reruns it, declines it with a trip wire or escalates it. Lift mode runs monthly: it ticks
+# the Dependency Dashboard for holds lifted earlier that Renovate has not reopened, then removes the holds
+# whose date has passed in one auto-merged PR. Either way, the `report` job then sends the one email a run
+# produces, or stays silent. It is a separate job on a GitHub-hosted runner because the triage and lift jobs
+# run code nobody reviewed (the updated dependency's install scripts, the agent's commands): the mail key
+# lives only in the report job, which runs nothing but this repository's own scripts.
 #
 # docs/architecture.md is the contract for every input, output and environment variable used here; the
 # README is the user-facing description, with a complete caller. Concurrency is the caller's: one group per
@@ -45,11 +47,11 @@ on:
         type: string
         default: ''
       service_setup:
-        description: 'Bash run before the install (a database container, say); may write to $GITHUB_ENV.'
+        description: "Bash run before the install, on the caller's own commit (not the PR head); may write to $GITHUB_ENV."
         type: string
         default: ''
       service_teardown:
-        description: 'Bash run after the agent, whatever happened.'
+        description: 'Bash run after the agent, whatever happened, on the PR-head checkout: keep it self-contained.'
         type: string
         default: ''
       email_to:
@@ -65,7 +67,7 @@ on:
         type: string
         default: renovate-doctor
       notes_file:
-        description: 'Repository-relative path of the project-notes file the agent reads after the skill.'
+        description: "Repository-relative path of the project-notes file, read from the caller's own commit."
         type: string
         default: ''
       rerun_workflow:
@@ -97,7 +99,7 @@ on:
         description: 'Claude Code OAuth token for anthropics/claude-code-action (`claude setup-token`).'
         required: true
       MANDRILL_API_KEY:
-        description: 'Mandrill API key for the report email. Only the report step sees it, never the agent.'
+        description: 'Mandrill API key for the report email. Only the report job sees it, never the agent.'
         required: true
 
 jobs:
@@ -114,16 +116,37 @@ jobs:
       issues: write
       actions: write
       id-token: write
+    env:
+      # The commands a dry run refuses, as Claude Code permission rules: every write to GitHub the skill
+      # knows. Written once here for `--disallowedTools` and for the prompt, which tells the agent a refusal
+      # is expected. A deny rule matches past a leading variable assignment, so `GH_TOKEN=... gh run rerun`
+      # is refused by the `gh run rerun` rule.
+      RENOVATE_DOCTOR_DRY_RUN_REFUSED: >-
+        Bash(git push:*),Bash(gh api:*),Bash(gh pr merge:*),Bash(gh pr create:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh pr close:*),Bash(gh pr review:*),Bash(gh run rerun:*),Bash(gh issue:*)
+    # What the report job needs from this one. Job outputs rather than files, because nothing written in
+    # this job's workspace after the install can be trusted; the outcome file goes as an artifact, as data.
+    outputs:
+      launch: ${{ steps.gate.outputs.launch }}
+      outcome: ${{ steps.gate.outputs.outcome }}
+      summary: ${{ steps.gate.outputs.summary }}
+      reason: ${{ steps.gate.outputs.reason }}
+      pr_number: ${{ steps.gate.outputs.pr_number }}
+      pr_url: ${{ steps.gate.outputs.pr_url }}
+      pr_title: ${{ steps.gate.outputs.pr_title }}
+      head_sha: ${{ steps.gate.outputs.head_sha }}
+      agent_outcome: ${{ steps.agent.outcome }}
     steps:
       # A self-hosted runner that is not ephemeral may keep RUNNER_TEMP between jobs, and a stale outcome
-      # file from an earlier run would be reported as this run's, so the doctor's scratch directory starts
-      # empty.
+      # file or notes copy from an earlier run would be taken for this run's, so the doctor's scratch
+      # directory starts empty.
       - name: Clear renovate-doctor's scratch directory
         run: rm -rf "$RUNNER_TEMP/renovate-doctor"
 
-      # The caller's repository, at its default branch for now: the PR and its head SHA are only known
-      # once the gate has read the event. Full history, because the agent reads the branch's commits and
-      # branches from the default branch for a hold PR.
+      # The caller's repository at the commit this run was started from (GITHUB_SHA, the default branch's tip
+      # for a workflow_run), which is where the notes file and the service setup are read: an older Renovate
+      # branch may predate either. The PR head is only known once the gate has read the event. Full
+      # history, because the agent reads the branch's commits and branches from the default branch for a
+      # hold PR.
       - name: Check out the repository
         uses: actions/checkout@v7
         with:
@@ -150,14 +173,12 @@ jobs:
             echo "::warning::job.workflow_sha is empty, so renovate-doctor ran from its default branch rather than the tag this caller pinned."
           fi
 
-      # The scripts run on renovate-doctor's own Node version, whatever the project uses, and keep using it
-      # after the project's Node is set up below: their path is saved here and every script step calls it.
+      # The gate runs on renovate-doctor's own Node version, whatever the project uses; the project's Node is
+      # set up after the PR head is checked out.
       - name: Set up Node for renovate-doctor
         uses: actions/setup-node@v7
         with:
           node-version-file: .renovate-doctor/.nvmrc
-      - name: Remember renovate-doctor's Node
-        run: echo "RENOVATE_DOCTOR_NODE=$(command -v node)" >> "$GITHUB_ENV"
 
       # Reusable-workflow inputs cannot default to a value that depends on another input, so the install and
       # test defaults for the package manager are worked out here. Multi-line commands survive the heredoc
@@ -194,7 +215,41 @@ jobs:
           INPUT_RUN_ID: ${{ inputs.run_id }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
           RERUN_WORKFLOW: ${{ inputs.rerun_workflow }}
-        run: '"$RENOVATE_DOCTOR_NODE" .renovate-doctor/scripts/gate.mjs'
+          # The logins whose marker comments count as "handled". Empty means the gate's default, the Claude
+          # App and the job token's github-actions[bot]; a caller whose agent comments as another account sets
+          # the repository or organisation variable (a caller cannot set env inside a called workflow, but
+          # `vars` here are the caller's).
+          RENOVATE_DOCTOR_COMMENT_AUTHORS: ${{ vars.RENOVATE_DOCTOR_COMMENT_AUTHORS }}
+        run: node .renovate-doctor/scripts/gate.mjs
+
+      # The notes file from the caller's own commit, copied out of the checkout before the PR head replaces
+      # it; the agent is handed the copy's absolute path, or `none`.
+      - name: Copy the project notes
+        id: notes
+        if: steps.gate.outputs.launch == 'true'
+        env:
+          NOTES_FILE: ${{ inputs.notes_file }}
+        run: |
+          copy="$RUNNER_TEMP/renovate-doctor/notes.md"
+          if [ -z "$NOTES_FILE" ]; then
+            path=none
+          elif [ -f "$NOTES_FILE" ]; then
+            mkdir -p "$(dirname "$copy")"
+            cp "$NOTES_FILE" "$copy"
+            path="$copy"
+          else
+            echo "::warning::notes_file is $NOTES_FILE, which does not exist at $GITHUB_SHA; the agent runs without project notes."
+            path=none
+          fi
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+
+      # A reusable workflow cannot vary `services`, so a database or other service the tests need is
+      # started here, from the caller's own commit, before the PR head is checked out; it may export
+      # settings (a port, say) through $GITHUB_ENV for the steps after it.
+      - name: Set up services
+        if: steps.gate.outputs.launch == 'true' && inputs.service_setup != ''
+        shell: bash
+        run: ${{ inputs.service_setup }}
 
       # Now the head the failure happened on. Detached, because the agent pushes with
       # `git push origin HEAD:refs/heads/<branch>`; a branch already deleted (a dry run on a closed PR) is
@@ -226,13 +281,6 @@ jobs:
         with:
           dest: ${{ runner.temp }}/setup-pnpm
 
-      # A reusable workflow cannot vary `services`, so a database or other service the tests need is
-      # started here; it may export settings (a port, say) through $GITHUB_ENV for the steps after it.
-      - name: Set up services
-        if: steps.gate.outputs.launch == 'true' && inputs.service_setup != ''
-        shell: bash
-        run: ${{ inputs.service_setup }}
-
       # A failed install does not stop the run: an install that fails on the Renovate branch (a peer range
       # conflict, a lockfile the new version breaks) is often the very failure to triage. The agent is told
       # how it went and runs the install again itself.
@@ -250,15 +298,20 @@ jobs:
         env:
           # The Claude GitHub App token that `gh` and `git` use inside the action cannot be counted on to
           # rerun jobs (the App asks for read access to Actions at most); the job's own token can
-          # (`actions: write`), and the prompt says to use it for that one command. MANDRILL_API_KEY is
-          # deliberately not here: the agent never holds the mail key.
-          RENOVATE_DOCTOR_ACTIONS_TOKEN: ${{ github.token }}
+          # (`actions: write`), and the prompt says to use it for that one command. A dry run gets no such
+          # token at all. There is no mail key in this job.
+          RENOVATE_DOCTOR_ACTIONS_TOKEN: ${{ !inputs.dry_run && github.token || '' }}
           # Claude Code's Bash tool stops a command after two minutes by default, which a project's test
           # suite can outlast; ten minutes by default, up to thirty when the agent asks.
           BASH_DEFAULT_TIMEOUT_MS: '600000'
           BASH_MAX_TIMEOUT_MS: '1800000'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # A dry run uses the job's own token instead of the Claude App's. It pushes nothing, so it does not
+          # need the App token's power to start CI, and the App token exchange refuses a caller workflow that
+          # is not yet on the default branch, which is exactly where a rehearsal before merging runs. Empty
+          # means "mint the App token".
+          github_token: ${{ inputs.dry_run && github.token || '' }}
           # The action refuses bot actors unless they are listed here, and a triage run's actor is always a
           # bot: renovate[bot] for the run on Renovate's push, claude[bot] for the run on the agent's own fix
           # push, github-actions[bot] for a rerun the workflow's token started. Which PRs reach the agent
@@ -281,18 +334,20 @@ jobs:
             - rerun_before: ${{ steps.gate.outputs.rerun_before }}
             - Dry run: ${{ inputs.dry_run }}
             - Outcome file: ${{ runner.temp }}/renovate-doctor/outcome.json
-            - Notes file: ${{ inputs.notes_file || 'none' }}
+            - Notes file: ${{ steps.notes.outputs.path }}
             - Rerun workflow: ${{ inputs.rerun_workflow || 'none' }}
             - Gate: ${{ steps.gate.outputs.reason }}${{ inputs.dry_run && format(' (dry-run verdict: {0})', steps.gate.outputs.verdict) || '' }}
 
-            To rerun failed jobs, use the workflow's own token, which may rerun them where the default one may not: `GH_TOKEN="$RENOVATE_DOCTOR_ACTIONS_TOKEN" gh run rerun <run_id> --failed`. Use your default credentials for everything else.
+            ${{ inputs.dry_run && format('This is a dry run, and the harness refuses these commands: {0}. A refusal is expected; note what you would have done and carry on.', env.RENOVATE_DOCTOR_DRY_RUN_REFUSED) || 'To rerun failed jobs, use the workflow''s own token, which may rerun them where the default one may not: `GH_TOKEN="$RENOVATE_DOCTOR_ACTIONS_TOKEN" gh run rerun <run_id> --failed`. Use your default credentials for everything else.' }}
           # The tools the skill needs; Bash is not allowed by default, and the skill needs git, gh, node and
           # the package manager. No --max-turns: reproducing a failure takes as many turns as it takes, and
-          # the job's timeout is the limit.
+          # the job's timeout is the limit. In a dry run every write to GitHub is denied as well (deny rules
+          # win over allow rules), so the rehearsal does not rest on the prompt alone.
           claude_args: |
-            --allowedTools "Bash,Edit,Write,Read,Glob,Grep"
+            --allowedTools "Bash,Edit,Write,Read,Glob,Grep" ${{ inputs.dry_run && format('--disallowedTools "{0}"', env.RENOVATE_DOCTOR_DRY_RUN_REFUSED) || '' }}
 
-      # The agent's full transcript, for diagnosing a run that did something odd.
+      # The agent's full transcript, for diagnosing a run that did something odd. `overwrite`, so a rerun of
+      # this job replaces its own earlier upload rather than failing on the name.
       - name: Keep the agent transcript
         if: always() && steps.agent.outputs.execution_file != ''
         # Diagnostic only: a stalled upload must not mark a run that did its work as failed.
@@ -302,36 +357,26 @@ jobs:
           name: renovate-doctor-transcript-${{ github.run_id }}
           path: ${{ steps.agent.outputs.execution_file }}
           retention-days: 30
+          overwrite: true
 
+      # The outcome file is the report job's input. It goes over as an artifact, read there as data and
+      # validated; when the agent wrote none, nothing is uploaded and the report says so.
+      - name: Hand the outcome to the report job
+        if: always() && steps.gate.outputs.launch == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: renovate-doctor-outcome-${{ github.run_id }}
+          path: ${{ runner.temp }}/renovate-doctor/outcome.json
+          if-no-files-found: ignore
+          retention-days: 30
+          overwrite: true
+
+      # Runs on the PR-head checkout, which may predate the caller's setup, so the command must not rely on
+      # files in the repository.
       - name: Tear down services
         if: always() && steps.gate.outputs.launch == 'true' && inputs.service_teardown != ''
         shell: bash
         run: ${{ inputs.service_teardown }}
-
-      # The one email a run produces, or silence, and the PR comment when the gate escalated without an
-      # agent. It runs whenever the agent was launched, however the agent ended, and when the gate produced
-      # an outcome itself.
-      - name: Report
-        if: always() && (steps.gate.outputs.launch == 'true' || steps.gate.outputs.outcome != '')
-        env:
-          REPORT_MODE: triage
-          OUTCOME_FILE: ${{ runner.temp }}/renovate-doctor/outcome.json
-          AGENT_OUTCOME: ${{ steps.agent.outcome }}
-          GATE_OUTCOME: ${{ steps.gate.outputs.outcome }}
-          GATE_SUMMARY: ${{ steps.gate.outputs.summary }}
-          GATE_REASON: ${{ steps.gate.outputs.reason }}
-          DRY_RUN: ${{ inputs.dry_run }}
-          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
-          PR_URL: ${{ steps.gate.outputs.pr_url }}
-          PR_TITLE: ${{ steps.gate.outputs.pr_title }}
-          HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          GH_TOKEN: ${{ github.token }}
-          EMAIL_TO: ${{ inputs.email_to }}
-          EMAIL_FROM: ${{ inputs.email_from }}
-          EMAIL_FROM_NAME: ${{ inputs.email_from_name }}
-          MANDRILL_API_KEY: ${{ secrets.MANDRILL_API_KEY }}
-        run: '"$RENOVATE_DOCTOR_NODE" .renovate-doctor/scripts/report.mjs'
 
       # Most runs stop at the gate (a Renovate PR whose failure was handled already, a network failure left
       # to the rerun automation), and the run's summary page should say why without opening the log.
@@ -349,7 +394,7 @@ jobs:
             echo "$reason"
             if [ -n "$OUTCOME" ]; then
               echo
-              echo "The gate produced the outcome \`$OUTCOME\` itself; the Report step emailed and commented."
+              echo "The gate produced the outcome \`$OUTCOME\` itself; the report job sends the email."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -367,6 +412,10 @@ jobs:
     env:
       # The one command the lift's agent step may run, written once for the prompt and the tool allowlist.
       LIFT_COMMAND: node .renovate-doctor/scripts/lift.mjs${{ inputs.dry_run && ' --dry-run' || '' }}
+    outputs:
+      outcome: ${{ steps.lift.outputs.outcome }}
+      pr_url: ${{ steps.lift.outputs.pr_url }}
+      summary: ${{ steps.lift.outputs.summary }}
     steps:
       # A stale lift.json from an earlier run on the same machine would be read as this run's result.
       - name: Clear renovate-doctor's scratch directory
@@ -404,9 +453,10 @@ jobs:
         with:
           node-version-file: .renovate-doctor/.nvmrc
 
-      # Before the lift, for holds lifted earlier: by a lift PR that has merged since, or by the agent when a
-      # condition test fired. Ticking a checkbox needs no CI, so the job's own token is enough. Nothing here
-      # is worth failing the lift over.
+      # Before the lift: for every hold lifted from the config in the last 60 days (by a lift PR, or by the
+      # agent's fix commit when a condition test fired) for which Renovate has opened no PR since, tick the
+      # update's "recreate" line on the Dependency Dashboard. It reads PRs and edits one issue, which needs
+      # no CI, so the job's own token is enough. Nothing here is worth failing the lift over.
       - name: Ask Renovate to recreate lifted updates
         continue-on-error: true
         env:
@@ -434,6 +484,8 @@ jobs:
           BASH_DEFAULT_TIMEOUT_MS: '600000'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # A dry run touches nothing on GitHub, so the job's token will do; see the triage job.
+          github_token: ${{ inputs.dry_run && github.token || '' }}
           # A scheduled run's actor is whoever last changed the caller's workflow file, which is Renovate
           # when it updates the pinned renovate-doctor tag. See the triage job for the others.
           allowed_bots: 'renovate[bot],claude[bot],github-actions[bot]'
@@ -454,11 +506,12 @@ jobs:
           name: renovate-doctor-transcript-${{ github.run_id }}
           path: ${{ steps.agent.outputs.execution_file }}
           retention-days: 30
+          overwrite: true
 
-      # lift.json to the report's LIFT_* settings: `opened` when a PR was opened (or, in a dry run, would
-      # have been, so the rehearsal prints the email a real run would send), `nothing` when the script
-      # succeeded with nothing expired, and `failure` when the script failed, the agent step failed, or the
-      # file is missing (the script never ran).
+      # lift.json to the report's LIFT_* settings, first match wins: `failure` when the file is missing (the
+      # script never ran), the script exited non-zero or the agent step failed; `blocked` when an earlier
+      # lift PR is still open, so nothing was lifted; `opened` when a PR was opened (or, in a dry run, would
+      # have been, so the rehearsal prints the email a real run would send); otherwise `nothing`.
       - name: Read the lift result
         id: lift
         if: always()
@@ -483,6 +536,8 @@ jobs:
             elif [ "$AGENT_OUTCOME" != success ]; then
               outcome=failure
               summary="lift failed: the agent step ended in $AGENT_OUTCOME after the script reported: $summary"
+            elif [ "$(field blocked)" = true ]; then
+              outcome=blocked
             elif [ "$(field opened)" = true ] || { [ "$DRY_RUN" = true ] && [ -n "$(field packages)" ]; }; then
               outcome=opened
             else
@@ -496,13 +551,66 @@ jobs:
             echo "summary=$summary"
           } >> "$GITHUB_OUTPUT"
 
+  # The one email a run produces, or silence, and the PR comment when the gate escalated without an agent.
+  # A job of its own because the triage and lift jobs run code nobody reviewed: the updated dependency's
+  # install scripts and the agent's commands can append to $GITHUB_ENV or rewrite any file in the
+  # workspace, including this repository's scripts, so a report step there would run their code holding the
+  # mail key. This job starts from a fresh checkout of renovate-doctor and takes only job outputs and the
+  # outcome file (data, validated) from the jobs before it. It runs on a GitHub-hosted runner, always, so
+  # the mail key never lands on the caller's machine; make it an input only when a caller needs that.
+  report:
+    needs: [triage, lift]
+    if: always() && (needs.triage.result != 'skipped' || needs.lift.result != 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only what the gate-escalation comment needs; the email goes through Mandrill, not GitHub.
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Check out renovate-doctor
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository || 'michael-hewitt/renovate-doctor' }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+
+      - name: Set up Node for renovate-doctor
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      # Nothing to download when the agent wrote no outcome file or the triage job never got that far;
+      # report.mjs then reports the missing file from the agent step's outcome.
+      - name: Fetch the outcome file
+        if: inputs.mode == 'triage' && needs.triage.outputs.launch == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: renovate-doctor-outcome-${{ github.run_id }}
+          path: ${{ runner.temp }}/renovate-doctor
+
+      # Triage: whenever the agent was launched, however it ended, and when the gate produced an outcome
+      # itself (fix attempts exhausted, or a gate error). Lift: always; the script is silent when nothing
+      # had expired, and an empty LIFT_OUTCOME (the lift job died before its last step) is a failure.
       - name: Report
-        if: always()
+        if: >-
+          (inputs.mode == 'triage' && (needs.triage.outputs.launch == 'true' || needs.triage.outputs.outcome != '')) ||
+          inputs.mode == 'lift'
         env:
-          REPORT_MODE: lift
-          LIFT_OUTCOME: ${{ steps.lift.outputs.outcome }}
-          LIFT_PR_URL: ${{ steps.lift.outputs.pr_url }}
-          LIFT_SUMMARY: ${{ steps.lift.outputs.summary }}
+          REPORT_MODE: ${{ inputs.mode }}
+          OUTCOME_FILE: ${{ runner.temp }}/renovate-doctor/outcome.json
+          AGENT_OUTCOME: ${{ needs.triage.outputs.agent_outcome }}
+          GATE_OUTCOME: ${{ needs.triage.outputs.outcome }}
+          GATE_SUMMARY: ${{ needs.triage.outputs.summary }}
+          GATE_REASON: ${{ needs.triage.outputs.reason }}
+          PR_NUMBER: ${{ needs.triage.outputs.pr_number }}
+          PR_URL: ${{ needs.triage.outputs.pr_url }}
+          PR_TITLE: ${{ needs.triage.outputs.pr_title }}
+          HEAD_SHA: ${{ needs.triage.outputs.head_sha }}
+          LIFT_OUTCOME: ${{ needs.lift.outputs.outcome }}
+          LIFT_PR_URL: ${{ needs.lift.outputs.pr_url }}
+          LIFT_SUMMARY: ${{ needs.lift.outputs.summary }}
           DRY_RUN: ${{ inputs.dry_run }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           GH_TOKEN: ${{ github.token }}
@@ -510,4 +618,4 @@ jobs:
           EMAIL_FROM: ${{ inputs.email_from }}
           EMAIL_FROM_NAME: ${{ inputs.email_from_name }}
           MANDRILL_API_KEY: ${{ secrets.MANDRILL_API_KEY }}
-        run: node .renovate-doctor/scripts/report.mjs
+        run: node scripts/report.mjs

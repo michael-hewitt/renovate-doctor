@@ -14,7 +14,8 @@
 // anyone may comment, so a stranger's marker is ignored (with a warning on the run, so a wrong login in
 // the list shows up there rather than as a silent second triage).
 //
-// Environment: GITHUB_EVENT_NAME (`workflow_run` or `workflow_dispatch`), GITHUB_EVENT_PATH,
+// Environment: GITHUB_EVENT_NAME (`workflow_run`; `workflow_dispatch` or any event with INPUT_PR set is a
+// manual run, such as a `push` rehearsal before the caller is merged), GITHUB_EVENT_PATH,
 // GITHUB_REPOSITORY, GH_TOKEN (read by `gh`), RUNNER_TEMP, INPUT_PR, INPUT_RUN_ID, INPUT_DRY_RUN
 // (`true`/`false`), RERUN_WORKFLOW, GITHUB_OUTPUT, GITHUB_WORKFLOW_REF (set by Actions; it names the
 // caller's own workflow file, whose failed runs are not CI failures to triage), and
@@ -39,6 +40,13 @@ const renovateBot = 'renovate[bot]';
 
 /** The conditions in the order the contract evaluates them; each skip reason starts with one. */
 export const conditions = ['failure', 'renovate', 'open', 'not handled', "rerun automation's turn", 'attempts'];
+
+/**
+ * The conditions a dry run enforces rather than only reports. A rehearsal may target a closed PR, an old
+ * head or a settled one, but never a run that did not fail or a PR that is not Renovate's (a fork's run, a
+ * person's branch): the agent works on whatever it is launched on, dry run or not.
+ */
+const enforcedInDryRun = ['failure', 'renovate'];
 
 /** Two fix commits on a branch are enough; a third would only loop with CI. */
 const maxAttempts = 2;
@@ -254,18 +262,25 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
   /** The first failed condition, as `<condition>: <detail>`. */
   let firstFailure = '';
   let firstFailedCondition = '';
-  /** Records a condition and says whether to carry on: always in a dry run, otherwise only past a pass. */
+  /**
+   * Records a condition and says whether to carry on: past a pass, and in a dry run past a failure too,
+   * except for the conditions a dry run enforces.
+   */
   function record(condition, pass, detail) {
     result.checks.push({ condition, result: pass === undefined ? 'unknown' : pass ? 'pass' : 'fail', detail });
     if (pass === false && !firstFailure) {
       firstFailure = `${condition}: ${detail}`;
       firstFailedCondition = condition;
     }
-    return pass !== false || dryRun;
+    return pass !== false || (dryRun && !enforcedInDryRun.includes(condition));
   }
   function skip() {
     result.launch = false;
     result.reason = firstFailure;
+    if (dryRun) {
+      result.verdict = `would skip: ${firstFailure}`;
+      result.reason = `dry run: ${result.verdict} (failure and renovate hold even in a dry run)`;
+    }
     return result;
   }
   function setPr(pr) {
@@ -286,7 +301,9 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
     result.headSha = run.head_sha;
     result.headBranch = run.head_branch;
     result.failedRunIds = [run.id];
-  } else if (eventName === 'workflow_dispatch') {
+  } else if (eventName === 'workflow_dispatch' || input.pr) {
+    // A manual run. `workflow_dispatch` only works once the caller is on the default branch, so a
+    // rehearsal before that runs on `push` with the PR hard-coded; any event naming a PR is taken as one.
     if (!input.pr) throw new Error('a manual run needs the pr input (the PR to triage)');
     pr = github.ghApi(`repos/${repository}/pulls/${input.pr}`);
     setPr(pr);

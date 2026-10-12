@@ -1,7 +1,10 @@
 // report - after the agent, send the one email a run produces, or stay silent, and say which and why.
 //
-// The triage job's last step, run `if: always()` whenever the gate launched the agent or produced an
-// outcome itself; the lift job runs it too, in lift mode. The rules are the report contract in
+// The only step of the workflow's `report` job, which runs after the triage or lift job, on a GitHub-hosted
+// runner, from a fresh checkout of this repository: the mail key never shares a job with the install or
+// the agent. In triage mode it runs whenever the gate launched the agent or produced an outcome itself,
+// and reads the outcome file the triage job handed over as an artifact; in lift mode it always runs. It
+// reads no file from the caller's repository. The rules are the report contract in
 // docs/architecture.md: a `merged` or `rerun` outcome is silent unless the agent asked for a mention, and
 // a `skipped` one (the PR moved on before the agent acted) is always silent; everything else (declined,
 // escalated, a run that failed, an agent that wrote no or a malformed outcome file) is one plain-text
