@@ -4,6 +4,12 @@ Callers pin a tag (`uses: michael-hewitt/renovate-doctor/.github/workflows/renov
 workflow checks out its scripts and skill at that tag's commit, so a caller runs exactly the version it pinned
 until it moves the pin. Every change a caller could notice gets a new tag and an entry here.
 
+## v0.1.3 - 2026-10-12
+
+- New `model` input, default `claude-opus-5-5`, passed to claude-code-action as `--model` for the triage and
+  lift agents. Before, the action chose its own default, which the first caller's dry run showed to be
+  Sonnet.
+
 ## v0.1.2 - 2026-10-12
 
 - `gh api --paginate` is used without `--slurp`, which the first caller's self-hosted runner's `gh` predates

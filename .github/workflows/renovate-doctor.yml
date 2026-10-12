@@ -98,6 +98,10 @@ on:
         description: "The job's timeout."
         type: number
         default: 60
+      model:
+        description: 'The Claude model the triage and lift agents run on, as `claude --model` takes it.'
+        type: string
+        default: claude-opus-5-5
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: 'Claude Code OAuth token for anthropics/claude-code-action (`claude setup-token`).'
@@ -350,7 +354,7 @@ jobs:
           # the job's timeout is the limit. In a dry run every write to GitHub is denied as well (deny rules
           # win over allow rules), so the rehearsal does not rest on the prompt alone.
           claude_args: |
-            --allowedTools "Bash,Edit,Write,Read,Glob,Grep" ${{ inputs.dry_run && format('--disallowedTools "{0}"', env.RENOVATE_DOCTOR_DRY_RUN_REFUSED) || '' }}
+            --model ${{ inputs.model }} --allowedTools "Bash,Edit,Write,Read,Glob,Grep" ${{ inputs.dry_run && format('--disallowedTools "{0}"', env.RENOVATE_DOCTOR_DRY_RUN_REFUSED) || '' }}
 
       # The agent's full transcript, for diagnosing a run that did something odd. Named per attempt, so a
       # re-run keeps the earlier attempt's transcript; `overwrite` covers a re-run of this one job alone.
@@ -501,7 +505,7 @@ jobs:
 
             Do not investigate, fix or retry anything, whatever it prints and however it exits: the next workflow step reads its result and reports it.
           claude_args: |
-            --allowedTools "Bash(${{ env.LIFT_COMMAND }})" --max-turns 3
+            --model ${{ inputs.model }} --allowedTools "Bash(${{ env.LIFT_COMMAND }})" --max-turns 3
 
       - name: Keep the agent transcript
         if: always() && steps.agent.outputs.execution_file != ''
