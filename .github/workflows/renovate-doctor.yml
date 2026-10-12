@@ -227,7 +227,10 @@ jobs:
           # the repository or organisation variable (a caller cannot set env inside a called workflow, but
           # `vars` here are the caller's).
           RENOVATE_DOCTOR_COMMENT_AUTHORS: ${{ vars.RENOVATE_DOCTOR_COMMENT_AUTHORS }}
-        run: node .renovate-doctor/scripts/gate.mjs
+        # The gh version first: the scripts use the runner's own `gh`, and a self-hosted runner's may be old.
+        run: |
+          gh --version | head -1
+          node .renovate-doctor/scripts/gate.mjs
 
       # The notes file from the caller's own commit, copied out of the checkout before the PR head replaces
       # it; the agent is handed the copy's absolute path, or `none`.
