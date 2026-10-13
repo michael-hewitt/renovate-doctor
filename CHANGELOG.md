@@ -4,6 +4,12 @@ Callers pin a tag (`uses: michael-hewitt/renovate-doctor/.github/workflows/renov
 workflow checks out its scripts and skill at that tag's commit, so a caller runs exactly the version it pinned
 until it moves the pin. Every change a caller could notice gets a new tag and an entry here.
 
+## v0.1.5 - 2026-10-13
+
+- New `effort` input, default `high`, passed to claude-code-action as `--effort` for the triage and lift
+  agents (Claude Code's levels: `low`, `medium`, `high`, `xhigh`, `max`). Before, Claude Code chose its own
+  default.
+
 ## v0.1.4 - 2026-10-12
 
 - The agent reads Actions runs and the PR's checks with the job's token (`RENOVATE_DOCTOR_ACTIONS_TOKEN`):
