@@ -284,6 +284,42 @@ describe('decide, on a workflow_run', () => {
     expect(result.reason).toBe('Node.js CI run 37993773276 failed on Renovate PR #3814; 1 fix attempt so far');
   });
 
+  it('counts the fixes its own comments record, so a rebase that drops the commits does not reset the cap', () => {
+    // Two merged markers for earlier heads, no fix commit left on the branch: Renovate rebased them away.
+    const github = fakeGithub({
+      [routes.comments]: [
+        ...comments,
+        doctorComment(1, handledMarker('1111111111111111111111111111111111111111', 'merged'), 'merged'),
+        doctorComment(2, handledMarker('2222222222222222222222222222222222222222', 'merged'), 'merged'),
+      ],
+    });
+    const result = decide(workflowRun(), { github, sleep });
+    expect(result).toMatchObject({ launch: false, outcome: 'escalated', attempts: 2 });
+    expect(result.reason).toBe(
+      'attempts: renovate-doctor comments on PR #3814 record 2 fix attempts and the branch carries 0 commits by someone ' +
+        'other than renovate[bot]: Renovate rebased the fixes away; fix attempts exhausted',
+    );
+    expect(result.summary).toMatch(/^Fix attempts exhausted: renovate-doctor has pushed 2 fix attempts/);
+    expect(result.summary).toContain('Renovate rebased each one away');
+  });
+
+  it('launches with one recorded fix rebased away, counting it as the one attempt', () => {
+    const github = fakeGithub({
+      [routes.comments]: [
+        ...comments,
+        doctorComment(1, handledMarker('1111111111111111111111111111111111111111', 'merged'), 'merged'),
+        doctorComment(2, handledMarker('3333333333333333333333333333333333333333', 'rerun'), 'rerun'),
+        {
+          ...doctorComment(3, handledMarker('4444444444444444444444444444444444444444', 'merged'), 'merged'),
+          user: { login: 'some-person' },
+        },
+      ],
+    });
+    const result = decide(workflowRun(), { github, sleep });
+    expect(result).toMatchObject({ launch: true, attempts: 1 });
+    expect(result.reason).toBe('Node.js CI run 37993773276 failed on Renovate PR #3814; 1 fix attempt so far');
+  });
+
   it('escalates instead of launching once two fix attempts are on the branch', () => {
     const github = fakeGithub({
       [routes.commits]: [...commits, fixCommit('a1b2c3d4e5f6', 'github-actions[bot]'), fixCommit('0f9e8d7c6b5a', null)],

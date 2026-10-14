@@ -4,6 +4,23 @@ Callers pin a tag (`uses: michael-hewitt/renovate-doctor/.github/workflows/renov
 workflow checks out its scripts and skill at that tag's commit, so a caller runs exactly the version it pinned
 until it moves the pin. Every change a caller could notice gets a new tag and an entry here.
 
+## v0.1.6 - 2026-10-14
+
+- The triage and lift jobs check the caller out with `persist-credentials: false`, and the PR head is fetched
+  with the job token passed to that one `git fetch`. Before, the persisted job token won over the Claude App
+  token in the remote URL, so the first caller's first live fix was pushed as `github-actions[bot]` and GitHub
+  left its CI runs at "action required" with no jobs; auto-merge would have waited forever. Pushes now go out
+  as the App (`claude[bot]`), whose pushes get CI.
+- The gate's two-attempt cap also counts the fixes recorded in renovate-doctor's own `merged` comments, so a
+  Renovate rebase that drops the fix commits (with the agent's author in `gitIgnoredAuthors`, which the README
+  now recommends) does not reset it. With the cap reached that way, the escalation says the fixes were
+  rebased away and are in the comments.
+- Skill: do not wait for CI on the pushed head (a pending check is `merged`'s normal state), never run
+  anything in the background, and write the outcome file before stopping. The first live fix run waited for
+  Chromatic in a background loop, stopped, and left no outcome file, which the report job escalated as
+  designed. The comment now says whether Renovate will keep rebasing the branch, read from the project's
+  `gitIgnoredAuthors`.
+
 ## v0.1.5 - 2026-10-13
 
 - New `effort` input, default `high`, passed to claude-code-action as `--effort` for the triage and lift

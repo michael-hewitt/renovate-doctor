@@ -103,6 +103,28 @@ export function readMarkers(comments, sha, { authors = defaultCommentAuthors } =
 }
 
 /**
+ * How many fixes the doctor has recorded on the PR: its `merged` markers by `authors`, on any head. A
+ * rebase by Renovate drops the fix commits (when the project's Renovate config ignores the agent's commit
+ * author, Renovate rebases over them), but the comments stay, so the attempt cap holds across rebases.
+ *
+ * @param {IssueComment[]} comments
+ * @param {{ authors?: string[] }} [options]
+ */
+export function countFixMarkers(comments, { authors = defaultCommentAuthors } = {}) {
+  let count = 0;
+  for (const comment of comments) {
+    if (!authors.includes(comment.user?.login ?? '')) continue;
+    for (const [, , outcome] of `${comment.body ?? ''}`.matchAll(markerPattern)) {
+      if (outcome === 'merged') {
+        count += 1;
+        break;
+      }
+    }
+  }
+  return count;
+}
+
+/**
  * @typedef {{ body?: string, html_url?: string, user?: { login?: string } | null }} IssueComment
  *   A PR comment as the issues API lists it, reduced to what the gate reads.
  *
@@ -457,12 +479,14 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
   if (!record('open', problems.length === 0, openDetail)) return skip();
 
   // 4. not handled
+  let recordedFixes = 0;
   if (pr) {
     /** @type {IssueComment[]} */
     const comments = github.ghApi(`repos/${repository}/issues/${pr.number}/comments?per_page=100`, {
       paginate: true,
     });
     const { handled, rerun, ignored } = readMarkers(comments, result.headSha, { authors: commentAuthors });
+    recordedFixes = countFixMarkers(comments, { authors: commentAuthors });
     for (const comment of ignored) {
       result.warnings.push(
         `::warning::renovate-doctor ignored a marker for ${short(result.headSha)} by ${comment.user?.login ?? '(unknown)'}, ` +
@@ -507,22 +531,33 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
   // 6. attempts
   /** @type {Commit[] | undefined} */
   let fixCommits;
+  let attempts = 0;
   if (pr) {
     /** @type {Commit[]} */
     const commits = github.ghApi(`repos/${repository}/pulls/${pr.number}/commits?per_page=100`, { paginate: true });
     // A commit whose author GitHub could not match to an account (author null) is not Renovate's.
     fixCommits = commits.filter((commit) => commit.author?.login !== renovateBot);
-    result.attempts = fixCommits.length;
+    // The larger of the fix commits on the branch and the fixes the doctor's comments record: a rebase
+    // drops the commits, never the comments.
+    attempts = Math.max(fixCommits.length, recordedFixes);
+    result.attempts = attempts;
     const listed = fixCommits.map((commit) => short(commit.sha)).join(', ');
-    const detail =
-      fixCommits.length >= maxAttempts
-        ? `${plural(fixCommits.length, 'commit')} on PR #${pr.number} are by someone other than ${renovateBot} (${listed}); fix attempts exhausted`
-        : `${plural(fixCommits.length, 'fix attempt')} on PR #${pr.number} so far${listed ? ` (${listed})` : ''}`;
-    record('attempts', fixCommits.length < maxAttempts, detail);
+    let detail;
+    if (attempts >= maxAttempts && recordedFixes > fixCommits.length) {
+      detail =
+        `renovate-doctor comments on PR #${pr.number} record ${plural(recordedFixes, 'fix attempt')} and the branch carries ` +
+        `${plural(fixCommits.length, 'commit')} by someone other than ${renovateBot}${listed ? ` (${listed})` : ''}: ` +
+        'Renovate rebased the fixes away; fix attempts exhausted';
+    } else if (attempts >= maxAttempts) {
+      detail = `${plural(fixCommits.length, 'commit')} on PR #${pr.number} are by someone other than ${renovateBot} (${listed}); fix attempts exhausted`;
+    } else {
+      detail = `${plural(attempts, 'fix attempt')} on PR #${pr.number} so far${listed ? ` (${listed})` : ''}`;
+    }
+    record('attempts', attempts < maxAttempts, detail);
   } else {
     record('attempts', undefined, 'no PR to count commits on');
   }
-  const exhausted = fixCommits !== undefined && fixCommits.length >= maxAttempts;
+  const exhausted = fixCommits !== undefined && attempts >= maxAttempts;
 
   // Outside a dry run the gate gets here only when every condition up to attempts held, so the run and
   // the PR were both resolved; and the commits were counted, or nothing would be exhausted.
@@ -534,6 +569,7 @@ function evaluate(input, { github, sleep, logWaitMs, logPauseMs }, result) {
       /** @type {PullRequest} */ (pr),
       /** @type {WorkflowRun} */ (run),
       /** @type {Commit[]} */ (fixCommits),
+      recordedFixes,
     );
     return result;
   }
@@ -590,9 +626,19 @@ function launchReason(pr, run, attempts) {
  * @param {PullRequest} pr
  * @param {WorkflowRun} run
  * @param {Commit[]} fixCommits
+ * @param {number} recordedFixes
  */
-function escalationSummary(pr, run, fixCommits) {
+function escalationSummary(pr, run, fixCommits, recordedFixes) {
   const listed = fixCommits.map((commit) => short(commit.sha)).join(', ');
+  if (recordedFixes > fixCommits.length) {
+    return (
+      `Fix attempts exhausted: renovate-doctor has pushed ${plural(recordedFixes, 'fix attempt')} to ${pr.title} (#${pr.number}) ` +
+      `and Renovate rebased each one away when the default branch moved (the branch now carries ` +
+      `${plural(fixCommits.length, 'commit')} by someone other than ${renovateBot}), and ${run.name} still fails on ` +
+      `${short(run.head_sha)}, so renovate-doctor did not try a third fix. The fix is in the renovate-doctor comments ` +
+      'on the PR; apply it when the default branch can hold still long enough to merge, or merge it by hand.'
+    );
+  }
   return (
     `Fix attempts exhausted: ${pr.title} (#${pr.number}) already carries ${plural(fixCommits.length, 'commit')} ` +
     `by someone other than ${renovateBot} (${listed}), and ${run.name} still fails on ${short(run.head_sha)}, ` +

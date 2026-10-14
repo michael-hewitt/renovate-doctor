@@ -204,19 +204,24 @@ the writes below. Commit with the git identity the checkout has; if `git config 
 4. Push without force: `git push origin HEAD:refs/heads/<branch>` (the checkout may be a detached HEAD).
    Rejected because the branch moved: outcome `skipped` (step 2).
 5. Check the visual-snapshot checks (`GH_TOKEN="$RENOVATE_DOCTOR_ACTIONS_TOKEN" gh pr checks <n>`), on the
-   head you were given and on the new one so
-   far. One pending or failed with changes to review means the outcome is `escalated`, not `merged`: still
-   enable auto-merge below (the person who accepts the snapshots then lets it merge), never accept or
-   approve the snapshots yourself, and say in the comment that the snapshot review is the one thing left.
+   head you were given, once, as they stand now. Do not wait for CI on the head you pushed: auto-merge
+   waits for it, and a check still pending is `merged`'s normal state. One failed with changes to review
+   means the outcome is `escalated`, not `merged`: still enable auto-merge below (the person who accepts the
+   snapshots then lets it merge), never accept or approve the snapshots yourself, and say in the comment
+   that the snapshot review is the one thing left. A fix that touched no client code cannot change a
+   snapshot.
 6. Read the default branch's required checks (see "Required checks"). Checks required, or unreadable:
    enable auto-merge, `gh pr merge <n> --auto --squash`. Never `--admin`, never a plain merge. If it refuses
    (auto-merge not allowed on the repository), escalate. No checks required: do not enable auto-merge, since
    it would merge at once, before CI has run on the fix; the outcome is `escalated`, and the comment and the
    summary say that the fix is pushed and auto-merge was not enabled because the default branch requires no
    checks.
-7. Comment. Say what failed, what the fix changes, whether auto-merge is on, and that Renovate does not
-   rebase a branch another author committed to, so renovate-doctor owns the merge from here (ticking the
-   PR's rebase checkbox hands it back to Renovate and discards the fix).
+7. Comment. Say what failed, what the fix changes, whether auto-merge is on, and what a rebase does now.
+   Read the project's Renovate config: when `gitIgnoredAuthors` lists your commit email (`git config
+user.email`), Renovate keeps rebasing the branch whenever the default branch moves, which discards the
+   fix and makes the workflow redo it, so say that the fix is lost if the default branch moves before the
+   merge. Otherwise Renovate does not rebase a branch another author committed to, so renovate-doctor owns
+   the merge from here, and ticking the PR's rebase checkbox hands it back to Renovate and discards the fix.
 8. Write the outcome file: `merged`, classification `fixable`. `merged` means auto-merge is on and your fix
    passed typecheck and tests locally; CI decides the rest. Set `mention: true` when the fix changed source
    code (not only manifests and the lockfile), lifted a hold, or taught you something the notes file should
@@ -401,8 +406,10 @@ launching on the same head again. A hand run's comment is posted as you and does
 
 ## The outcome file
 
-Write it last, at the path you were given, whatever happened (`mkdir -p` its directory first). Exactly this
-JSON:
+Write it last, at the path you were given, whatever happened (`mkdir -p` its directory first), and before
+you stop: the run ends the moment you stop, nothing resumes you, and a run that ends without the file is
+reported as `escalated` with "wrote no outcome". For the same reason never run a command in the
+background (`run_in_background`) and never poll for a check to finish. Exactly this JSON:
 
 ```json
 {

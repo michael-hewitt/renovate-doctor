@@ -147,8 +147,23 @@ run stops:
 
 - **The Claude GitHub App** installed on the repository (<https://github.com/apps/claude>). The agent pushes,
   comments and merges with the App's token, and pushes made with that token start your CI. Pushes made with
-  the workflow's own `GITHUB_TOKEN` never start workflows, so a fix or lift PR pushed that way would wait
-  forever for its checks.
+  the workflow's own `GITHUB_TOKEN` get no CI (GitHub leaves their runs at "action required"), so a fix or
+  lift PR pushed that way would wait forever for its checks; the workflow checks out without persisting that
+  token so git can only push as the App.
+- **Recommended: let Renovate rebase over the doctor's commits.** Renovate stops rebasing a branch once a
+  commit by an author it does not recognise is on it, so a fixed Renovate PR that falls behind the default
+  branch sits in conflict until a person ticks its rebase checkbox (which discards the fix). Listing the
+  agent's commit author in your Renovate config keeps Renovate rebasing: the fix is dropped when the default
+  branch moves before the merge, CI fails again, and the workflow redoes it, bounded by the two-attempt cap,
+  which counts the doctor's own comments and so survives rebases. On a quiet default branch the first fix
+  merges; on a busy one the PR escalates after two.
+
+  ```json
+  "gitIgnoredAuthors": ["41898282+claude[bot]@users.noreply.github.com"]
+  ```
+
+  That is the author claude-code-action configures for the agent's commits.
+
 - **Branch protection requiring your CI checks** on the default branch, and **Allow auto-merge** turned on in the
   repository settings. Without required checks, `gh pr merge --auto` merges at once, before CI has run on the
   fix; the lift checks for them and, finding none, leaves its PR for you to merge.

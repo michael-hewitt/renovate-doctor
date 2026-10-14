@@ -166,10 +166,16 @@ jobs:
       # branch may predate either. The PR head is only known once the gate has read the event. Full
       # history, because the agent reads the branch's commits and branches from the default branch for a
       # hold PR.
+      # `persist-credentials: false`: the job's token must not stay in the checkout's git config. The agent
+      # pushes with the Claude App token claude-code-action puts in the remote URL, and a persisted job token
+      # wins over that URL (git sends it as a header), so the first caller's first live push went out as
+      # github-actions[bot], whose pushes GitHub leaves at "action required" with no CI run. The one later
+      # fetch, of the PR head, carries the job token itself.
       - name: Check out the repository
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # This repository's scripts and skill, at the commit of this workflow file - the tag the caller pinned -
       # so the code that runs is always the code the caller chose. It is public, so no credentials are kept.
@@ -282,8 +288,12 @@ jobs:
         env:
           HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
           PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git fetch --no-tags origin "$HEAD_SHA" || git fetch --no-tags origin "refs/pull/$PR_NUMBER/head"
+          # The job's token for this one fetch only, as actions/checkout sends it, never stored in git's config.
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          fetch() { git -c "http.$GITHUB_SERVER_URL/.extraheader=$auth" fetch --no-tags origin "$1"; }
+          fetch "$HEAD_SHA" || fetch "refs/pull/$PR_NUMBER/head"
           git checkout --detach "$HEAD_SHA"
 
       # The project's Node, read from the PR head, so a Renovate PR that moves the Node version is
@@ -448,6 +458,8 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
+          # See the triage job: the lift PR must be pushed with the App token, not the persisted job token.
+          persist-credentials: false
 
       # See the triage job: the scripts at the tag the caller pinned, ignored by git.
       - name: Check out renovate-doctor
