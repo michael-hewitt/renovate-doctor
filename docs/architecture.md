@@ -100,9 +100,12 @@ moved) rather than by cancelling an agent mid-work, and GitHub keeps at most one
 ### Triage job
 
 1. Empty `$RUNNER_TEMP/renovate-doctor` (a non-ephemeral self-hosted runner may keep a stale outcome file).
-2. Check out the caller at the run's own commit (`GITHUB_SHA`, `fetch-depth: 0`): the PR head is only known
-   after the gate. Then this repository at `${{ job.workflow_sha }}` (from `job.workflow_repository`),
-   excluded from git.
+2. Check out the caller at the run's own commit (`GITHUB_SHA`, `fetch-depth: 0`, `persist-credentials:
+false`): the PR head is only known after the gate. Then this repository at `${{ job.workflow_sha }}`
+   (from `job.workflow_repository`), excluded from git. No job token stays in git's config: the agent's
+   pushes must go out with the Claude App token claude-code-action puts in the remote URL, and a persisted
+   job token wins over that URL (the first caller's first live push went out as `github-actions[bot]`, and
+   GitHub left the fix's CI runs at "action required" with no jobs).
 3. `actions/setup-node` with **this repository's** `.nvmrc`, for the gate.
 4. Work out the install and test commands (inputs cannot default on another input).
 5. **Gate**: `node .renovate-doctor/scripts/gate.mjs` (step id `gate`). Always exits 0; its decision is in
@@ -110,7 +113,8 @@ moved) rather than by cancelling an agent mid-work, and GitHub keeps at most one
 6. If `launch == 'true'`, still on the caller's commit: copy `notes_file` (if set and present) to
    `$RUNNER_TEMP/renovate-doctor/notes.md`, and run `service_setup`. Both come from the caller's commit
    because an older Renovate branch may predate them.
-7. Then fetch and check out `head_sha` detached (falling back to `refs/pull/<n>/head`); `actions/setup-node`
+7. Then fetch `head_sha` with the job token passed to that one `git fetch` as a header (as actions/checkout
+   sends it) and check it out detached (falling back to `refs/pull/<n>/head`); `actions/setup-node`
    with `node_version_file` read at the head; `pnpm/action-setup` with a per-job `dest` when `package_manager`
    is `pnpm`; then `install`, with `continue-on-error: true`, because a failing install is often the failure
    to triage. The prompt tells the agent how it ended.
@@ -158,15 +162,16 @@ refused commands (dry run) or that reruns use `RENOVATE_DOCTOR_ACTIONS_TOKEN`.
 
 ### Lift job
 
-1. Check out the caller's default branch (`fetch-depth: 0`: the next step reads the config's history) and
-   this repository; setup node with this repository's `.nvmrc` (only its scripts run here). Permissions:
+1. Check out the caller's default branch (`fetch-depth: 0`: the next step reads the config's history;
+   `persist-credentials: false`, as in the triage job) and this repository; setup node with this
+   repository's `.nvmrc` (only its scripts run here). Permissions:
    `contents`, `pull-requests`, `issues` write and `id-token: write`.
 2. `node .renovate-doctor/scripts/dashboard-recreate.mjs` with the job's token (`continue-on-error`): for every
    hold lifted from the config in the last 60 days for which Renovate has opened no PR since, tick the
    Dependency Dashboard "recreate" checkbox naming it.
 3. `node .renovate-doctor/scripts/lift.mjs`, run **inside** `anthropics/claude-code-action@v1`. The action
-   exports the Claude App token, whose pushes start CI; a `GITHUB_TOKEN` push never does, so the lift PR's
-   auto-merge would wait forever. The agent may run exactly that one command
+   exports the Claude App token, whose pushes start CI; a `GITHUB_TOKEN` push gets none (its runs sit at
+   "action required"), so the lift PR's auto-merge would wait forever. The agent may run exactly that one command
    (`--allowedTools "Bash(<command>)" --max-turns 3`). The script's `$GITHUB_OUTPUT` inside the action is the
    action's inner step's, so it also writes its outputs and `exit_code` to `$RUNNER_TEMP/renovate-doctor/lift.json`.
 4. A step reads `lift.json` into `LIFT_OUTCOME`: `failure` when the file is missing, `exit_code` is not 0 or the
