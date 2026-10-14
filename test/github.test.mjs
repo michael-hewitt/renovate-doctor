@@ -128,6 +128,21 @@ describe('ghApi', () => {
     expect(sleep).not.toHaveBeenCalled();
   });
 
+  it('does not retry a refusal by gh itself: an unknown flag, or a response with escape sequences', () => {
+    for (const stderr of [
+      'unknown flag: --allow-escape-sequences\n\nUsage:  gh api <endpoint> [flags]',
+      'the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway',
+    ]) {
+      const exec = vi.fn(() => {
+        throw ghFailure(stderr);
+      });
+      const { gh, sleep } = fakeGithub(exec);
+      expect(() => gh(['api', 'repos/o/r/actions/jobs/1/logs'])).toThrow(stderr.split('\n')[0]);
+      expect(exec).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    }
+  });
+
   it('retries a rate limit, which is a 4xx that asks to try again', () => {
     const exec = vi
       .fn()

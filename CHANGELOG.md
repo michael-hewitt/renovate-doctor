@@ -4,6 +4,15 @@ Callers pin a tag (`uses: michael-hewitt/renovate-doctor/.github/workflows/renov
 workflow checks out its scripts and skill at that tag's commit, so a caller runs exactly the version it pinned
 until it moves the pin. Every change a caller could notice gets a new tag and an entry here.
 
+## v0.1.7 - 2026-10-14
+
+- The gate reads job logs with `gh api --allow-escape-sequences`: `gh` 2.97 and later (GitHub-hosted
+  runners have 2.102) refuse to print a response with terminal escape sequences, which every job log has,
+  and the first dry run on a GitHub-hosted runner spent 35 minutes retrying that refusal before launching
+  the agent with no logs. A `gh` too old for the flag (a self-hosted runner's 2.45) gets a plain call
+  instead. The adapter no longer retries a refusal by `gh` itself, and the log wait now continues only
+  for a log that is not published yet (a 404); any other failure ends the wait for that job.
+
 ## v0.1.6 - 2026-10-14
 
 - The triage and lift jobs check the caller out with `persist-credentials: false`, and the PR head is fetched
