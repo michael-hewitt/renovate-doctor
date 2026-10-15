@@ -4,6 +4,17 @@ Callers pin a tag (`uses: michael-hewitt/renovate-doctor/.github/workflows/renov
 workflow checks out its scripts and skill at that tag's commit, so a caller runs exactly the version it pinned
 until it moves the pin. Every change a caller could notice gets a new tag and an entry here.
 
+## v0.1.8 - 2026-10-15
+
+- The agent's intended writes (`git push origin HEAD:…`, `gh pr create`, `gh pr merge`, `gh pr comment`,
+  `gh pr edit`, `gh run rerun`) are allowed by name. Claude Code now starts a headless run in auto mode,
+  where the bare `Bash` allowance is dropped and every command goes to a classifier that refuses merging a
+  PR no person reviewed: the second caller's first live hold had its `gh pr merge --auto` refused that way
+  and had to be merged by hand (the agent said so in the PR and the comment). A rule naming the command is
+  honoured before the classifier; everything else the agent runs still gets its look, and a dry run's deny
+  list still wins. The skill now runs `gh pr merge` as a command of its own, since a rule must match every
+  part of a compound command.
+
 ## v0.1.7 - 2026-10-14
 
 - The gate reads job logs with `gh api --allow-escape-sequences`: `gh` 2.97 and later (GitHub-hosted
