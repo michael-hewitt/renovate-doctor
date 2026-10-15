@@ -139,6 +139,17 @@ jobs:
       # is refused by the `gh run rerun` rule.
       RENOVATE_DOCTOR_DRY_RUN_REFUSED: >-
         Bash(git push:*),Bash(gh api:*),Bash(gh pr merge:*),Bash(gh pr create:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh pr close:*),Bash(gh pr review:*),Bash(gh run rerun:*),Bash(gh issue:*),Bash(gh pr ready:*),Bash(gh pr reopen:*),Bash(gh workflow run:*),Bash(gh label:*),Bash(gh run cancel:*),Bash(gh release:*)
+      # The writes the skill makes on purpose, allowed by name. Claude Code now starts a headless run in
+      # auto mode, where a bare `Bash` allowance is dropped and every command goes to a classifier that
+      # refuses, among other things, merging a PR no person reviewed: the first live hold on a caller had
+      # its `gh pr merge --auto` refused that way ("Merge Without Review") and had to be merged by hand. A
+      # rule naming the command is honoured before the classifier, so these run every time; everything
+      # else the agent does still gets the classifier's look (force pushes, branch deletion, anything odd),
+      # and in a dry run the deny list above wins over this list. A rule must match every part of a
+      # compound command, which is why the skill runs `gh pr merge` on its own. The push rule names the
+      # skill's form, `git push origin HEAD:refs/heads/<branch>`, not `git push` at large.
+      RENOVATE_DOCTOR_WRITES_ALLOWED: >-
+        Bash(git push origin HEAD:*),Bash(gh pr create:*),Bash(gh pr merge:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh run rerun:*)
     # What the report job needs from this one. Job outputs rather than files, because nothing written in
     # this job's workspace after the install can be trusted; the outcome file goes as an artifact, as data.
     outputs:
@@ -368,11 +379,14 @@ jobs:
 
             ${{ inputs.dry_run && format('This is a dry run, and the harness refuses these commands: {0}. A refusal is expected; note what you would have done and carry on.', env.RENOVATE_DOCTOR_DRY_RUN_REFUSED) || 'Your default token cannot read Actions runs or checks or rerun jobs: for those use the workflow''s own token, `GH_TOKEN="$RENOVATE_DOCTOR_ACTIONS_TOKEN" gh run list ...`, `... gh run view ...`, `... gh pr checks <n>`, `... gh run rerun <run_id> --failed`. Use your default credentials for everything else, every write included.' }}
           # The tools the skill needs; Bash is not allowed by default, and the skill needs git, gh, node and
-          # the package manager. No --max-turns: reproducing a failure takes as many turns as it takes, and
-          # the job's timeout is the limit. In a dry run every write to GitHub is denied as well (deny rules
-          # win over allow rules), so the rehearsal does not rest on the prompt alone.
+          # the package manager. The bare `Bash` stays for a run in a mode that honours it; the named writes
+          # (RENOVATE_DOCTOR_WRITES_ALLOWED) are what auto mode needs. No --permission-mode: the rules are
+          # written to do the right thing in either mode, so the default can move without a release here.
+          # No --max-turns: reproducing a failure takes as many turns as it takes, and the job's timeout is
+          # the limit. In a dry run every write to GitHub is denied as well (deny rules win over allow
+          # rules), so the rehearsal does not rest on the prompt alone.
           claude_args: |
-            --model ${{ inputs.model }} --effort ${{ inputs.effort }} --allowedTools "Bash,Edit,Write,Read,Glob,Grep" ${{ inputs.dry_run && format('--disallowedTools "{0}"', env.RENOVATE_DOCTOR_DRY_RUN_REFUSED) || '' }}
+            --model ${{ inputs.model }} --effort ${{ inputs.effort }} --allowedTools "Bash,Edit,Write,Read,Glob,Grep,${{ env.RENOVATE_DOCTOR_WRITES_ALLOWED }}" ${{ inputs.dry_run && format('--disallowedTools "{0}"', env.RENOVATE_DOCTOR_DRY_RUN_REFUSED) || '' }}
 
       # The agent's full transcript, for diagnosing a run that did something odd. Named per attempt, so a
       # re-run keeps the earlier attempt's transcript; `overwrite` covers a re-run of this one job alone.

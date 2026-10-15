@@ -121,7 +121,15 @@ false`): the PR head is only known after the gate. Then this repository at `${{ 
 8. The agent: `anthropics/claude-code-action@v1` with `claude_code_oauth_token`,
    `allowed_bots: renovate[bot],claude[bot],github-actions[bot]` (the action refuses bot actors otherwise,
    and a triage run's actor is always one of these),
-   `claude_args: --allowedTools "Bash,Edit,Write,Read,Glob,Grep"`, and the prompt below. Step id `agent`;
+   `claude_args: --allowedTools "Bash,Edit,Write,Read,Glob,Grep,<RENOVATE_DOCTOR_WRITES_ALLOWED>"`, and
+   the prompt below. The job-level `RENOVATE_DOCTOR_WRITES_ALLOWED` names the writes the skill makes on
+   purpose: `Bash(git push origin HEAD:*)`, `Bash(gh pr create:*)`, `Bash(gh pr merge:*)`,
+   `Bash(gh pr comment:*)`, `Bash(gh pr edit:*)`, `Bash(gh run rerun:*)`. Claude Code starts a headless run
+   in auto mode, where the bare `Bash` is dropped and each command goes to a classifier that refuses a merge
+   no person reviewed; a rule naming the command is honoured first, so these run every time, and the rest of
+   what the agent does still gets the classifier's look. A rule must match every part of a compound command,
+   so the skill runs `gh pr merge` alone. No `--permission-mode` is set: the bare `Bash` serves a run in a
+   mode that honours it, the named writes serve auto mode. Step id `agent`;
    `continue-on-error: true` is **not** used. Its env carries `RENOVATE_DOCTOR_ACTIONS_TOKEN` (the job's
    token, for `gh run rerun` only: the Claude App token may not rerun jobs; empty in a dry run) and longer Bash
    timeouts. A dry run gets the Claude App token like a real run, so the token exchange is rehearsed too.
